@@ -105,6 +105,7 @@ abstract class Backend {
   Future<List<Product>> catalog();
   Future<void> setFavorite(String productId, bool value);
   Future<OrderResponse> placeOrder(List<CartLine> lines, String requestId);
+  Future<List<OrderRecord>> orders();
   Future<void> logout();
 }
 
@@ -287,6 +288,14 @@ class ApiClient implements Backend {
     } catch (_) {
       return const OrderResponse(failure: OrderFailure.other);
     }
+  }
+
+  @override
+  Future<List<OrderRecord>> orders() async {
+    final r = await _send('GET', '/api/orders', auth: true);
+    if (r.statusCode != 200) throw ApiException(r.statusCode);
+    final list = (_json(r)['orders'] as List).cast<Map<String, dynamic>>();
+    return list.map(OrderRecord.fromJson).toList();
   }
 
   @override

@@ -58,3 +58,67 @@ class Soldier {
   final String name;
   final String unit;
 }
+
+/// Статус заказа на сервере.
+enum OrderStatus { ready, pickedUp, cancelled }
+
+class OrderLineRecord {
+  const OrderLineRecord({
+    required this.nameRu,
+    required this.nameKk,
+    required this.price,
+    required this.qty,
+  });
+
+  factory OrderLineRecord.fromJson(Map<String, dynamic> j) => OrderLineRecord(
+        nameRu: j['nameRu'] as String,
+        nameKk: j['nameKk'] as String,
+        price: (j['price'] as num).toInt(),
+        qty: (j['qty'] as num).toInt(),
+      );
+
+  final String nameRu;
+  final String nameKk;
+  final int price;
+  final int qty;
+
+  String name(String lang) => lang == 'kk' ? nameKk : nameRu;
+}
+
+/// Заказ из истории (`GET /api/orders`). Сервер отдаёт только заказы вошедшего человека.
+class OrderRecord {
+  const OrderRecord({
+    required this.id,
+    required this.code,
+    required this.total,
+    required this.status,
+    required this.createdAt,
+    required this.items,
+  });
+
+  factory OrderRecord.fromJson(Map<String, dynamic> j) => OrderRecord(
+        id: j['id'] as String,
+        code: j['code'] as String,
+        total: (j['total'] as num).toInt(),
+        status: switch (j['status']) {
+          'picked_up' => OrderStatus.pickedUp,
+          'cancelled' => OrderStatus.cancelled,
+          _ => OrderStatus.ready,
+        },
+        createdAt: DateTime.tryParse(j['createdAt'] as String? ?? '')?.toLocal() ??
+            DateTime.fromMillisecondsSinceEpoch(0),
+        items: [
+          for (final i in (j['items'] as List).cast<Map<String, dynamic>>())
+            OrderLineRecord.fromJson(i),
+        ],
+      );
+
+  final String id;
+
+  /// Код выдачи. Имеет смысл только пока заказ [OrderStatus.ready].
+  final String code;
+  final int total;
+  final OrderStatus status;
+  final DateTime createdAt;
+  final List<OrderLineRecord> items;
+}

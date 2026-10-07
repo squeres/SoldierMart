@@ -128,6 +128,9 @@ class AppState extends ChangeNotifier {
     favoritesOnly = false;
     _orderRequestId = null;
     placingOrder = false;
+    orders = const [];
+    ordersLoading = false;
+    ordersFailed = false;
     if (wasLoggedIn) unawaited(_api.logout());
     notifyListeners();
   }
@@ -221,6 +224,35 @@ class AppState extends ChangeNotifier {
   void setQuery(String q) {
     query = q;
     notifyListeners();
+  }
+
+  // ---------- история заказов ----------
+
+  /// Заказы вошедшего человека, новые сверху. Сервер отдаёт только его собственные.
+  List<OrderRecord> orders = const [];
+  bool ordersLoading = false;
+  bool ordersFailed = false;
+
+  Future<void> loadOrders() async {
+    ordersLoading = true;
+    ordersFailed = false;
+    notifyListeners();
+    try {
+      final list = await _api.orders();
+      if (!loggedIn) return; // вышли, пока шла загрузка
+      orders = list;
+    } on ApiException catch (e) {
+      if (e.unauthorized) {
+        _sessionExpired();
+        return;
+      }
+      ordersFailed = true;
+    } catch (_) {
+      ordersFailed = true;
+    } finally {
+      ordersLoading = false;
+      notifyListeners();
+    }
   }
 
   // ---------- избранное ----------

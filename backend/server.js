@@ -85,8 +85,35 @@ const app = await createApp({
   ...(process.env.RATE_LIMIT_PER_MIN ? { rateLimitPerMin: Number(process.env.RATE_LIMIT_PER_MIN) } : {}),
 });
 
+// Только для разработки без камеры: `npm run dev` создаёт тестовый аккаунт с «зарегистрированным» лицом.
+// Работает лишь при FACE_MODE=demo, где лицо и так не проверяется. В бою не включается.
+if (process.env.DEV_TEST_USER === '1') {
+  if (!face.isDemo) {
+    console.error('DEV_TEST_USER=1 работает только вместе с FACE_MODE=demo.');
+    process.exit(1);
+  }
+  const { hashPin } = await import('./src/pin.js');
+  const iin = '900101300007'; // вымышленный, проходит проверку контрольной цифры
+  const db = app.store.data;
+  db.users[iin] ??= {
+    iin,
+    name: 'Тестовый Солдат',
+    unit: 'в/ч 00000, тест',
+    balance: 50000,
+    ...(await hashPin('1111')),
+  };
+  db.faceTemplates[iin] ??= [new Array(128).fill(0)];
+  delete db.security.locked[iin];
+  delete db.security.pinFails[iin];
+  delete db.security.faceFails[iin];
+  await app.store.save();
+}
+
 app.server.listen(PORT, HOST, () => {
   console.log('SoldierMart сервер запущен');
+  if (process.env.DEV_TEST_USER === '1') {
+    console.log('  ТЕСТОВЫЙ АККАУНТ (только для разработки): ИИН 900101300007, ПИН 1111, лицо «зарегистрировано».');
+  }
   console.log(`  Адрес:        ${tls ? 'https' : 'http'}://${HOST}:${PORT}`);
   console.log(`  Данные:       ${dataDir}`);
   // Сам ключ в консоль не печатаем: она попадает в журналы и на экраны.

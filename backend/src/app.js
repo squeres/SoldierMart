@@ -226,6 +226,8 @@ export async function createApp(options = {}) {
     total: o.total,
     status: o.status,
     createdAt: o.createdAt,
+    ...(o.pickedUpAt ? { pickedUpAt: o.pickedUpAt } : {}),
+    ...(o.cancelledAt ? { cancelledAt: o.cancelledAt } : {}),
     items: o.items,
   });
 
@@ -613,10 +615,27 @@ export async function createApp(options = {}) {
         return send(res, 200, { ok: true, templates: db().faceTemplates[body.iin].length });
       }
       if (m === 'GET' && p === '/admin/orders') {
+        // status: ready (по умолчанию) | picked_up | cancelled | all; iin: история одного человека.
         const status = url.searchParams.get('status') ?? 'ready';
-        if (!ORDER_STATUSES.has(status)) throw new HttpError(400, 'invalid_status');
-        const list = db().orders.filter((o) => o.status === status).slice(-200).reverse().map(adminOrder);
+        if (status !== 'all' && !ORDER_STATUSES.has(status)) throw new HttpError(400, 'invalid_status');
+        const iin = url.searchParams.get('iin');
+        if (iin !== null && !isValidIin(iin)) throw new HttpError(400, 'invalid_input');
+        if (iin) audit('admin_view_orders', iin); // кто смотрел чужую историю, остаётся в журнале
+        const list = db()
+          .orders.filter((o) => (status === 'all' || o.status === status) && (!iin || o.iin === iin))
+          .slice(-200)
+          .reverse()
+          .map(adminOrder);
         return send(res, 200, { orders: list });
+      }
+      if (m === 'GET' && p === '/admin/users') {
+        // Поиск человека по части имени или ИИН (для просмотра истории и пополнения).
+        const q = (url.searchParams.get('q') ?? '').trim().toLowerCase();
+        const users = Object.values(db().users)
+          .filter((u) => !q || u.name.toLowerCase().includes(q) || u.iin.includes(q))
+          .slice(0, 50)
+          .map((u) => ({ iin: u.iin, name: u.name, unit: u.unit, balance: u.balance }));
+        return send(res, 200, { users });
       }
       if (m === 'POST' && p === '/admin/orders/pickup') {
         return send(res, 200, await pickupOrder(await readJson(req, 4096)));

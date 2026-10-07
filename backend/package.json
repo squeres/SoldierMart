@@ -9,6 +9,7 @@
   },
   "scripts": {
     "start": "node server.js",
+    "dev": "node dev.js",
     "test": "node --test",
     "enroll": "node enroll.js"
   },

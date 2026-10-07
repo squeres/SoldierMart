@@ -1,12 +1,18 @@
 import 'dart:io' show File;
+import 'dart:typed_data';
 
 import 'package:camera/camera.dart';
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart' show kIsWeb, kReleaseMode;
 import 'package:flutter/material.dart';
 
 import '../services/face_verifier.dart';
 import '../state/app_state.dart';
 import 'catalog_screen.dart';
+
+/// Только для разработки без камеры: `--dart-define=DEV_FAKE_CAMERA=true`.
+/// Вместо снимка уходят пустые байты. Настоящий сервер такой «снимок» отклонит,
+/// пройти он может лишь на сервере в демо-режиме (`npm run dev`). В release-сборке не работает.
+const bool kDevFakeCamera = bool.fromEnvironment('DEV_FAKE_CAMERA');
 
 /// Шаг 3 входа: обязательная проверка лица.
 /// Если камеры нет или доступ запрещён, войти нельзя: обхода нет.
@@ -20,6 +26,7 @@ class FaceScreen extends StatefulWidget {
 class _FaceScreenState extends State<FaceScreen> {
   CameraController? _ctrl;
   bool _cameraFailed = false;
+  bool _fakeCamera = false;
   bool _busy = false;
   FaceResult? _last;
 
@@ -46,7 +53,12 @@ class _FaceScreenState extends State<FaceScreen> {
       }
       setState(() => _ctrl = ctrl);
     } catch (_) {
-      if (mounted) setState(() => _cameraFailed = true);
+      if (!mounted) return;
+      if (kDevFakeCamera && !kReleaseMode) {
+        setState(() => _fakeCamera = true);
+      } else {
+        setState(() => _cameraFailed = true);
+      }
     }
   }
 
@@ -58,7 +70,7 @@ class _FaceScreenState extends State<FaceScreen> {
 
   Future<void> _scan() async {
     final ctrl = _ctrl;
-    if (ctrl == null || _busy) return;
+    if ((ctrl == null && !_fakeCamera) || _busy) return;
     final app = AppScope.of(context);
     setState(() {
       _busy = true;
@@ -67,13 +79,18 @@ class _FaceScreenState extends State<FaceScreen> {
 
     FaceResult result = FaceResult.error;
     try {
-      final shot = await ctrl.takePicture();
-      final bytes = await shot.readAsBytes();
-      // Снимок лица не должен оставаться на терминале.
-      if (!kIsWeb) {
-        try {
-          await File(shot.path).delete();
-        } catch (_) {}
+      final Uint8List bytes;
+      if (ctrl == null) {
+        bytes = Uint8List.fromList(const [0xFF, 0xD8, 0xFF, 0xD9]); // виртуальная камера
+      } else {
+        final shot = await ctrl.takePicture();
+        bytes = await shot.readAsBytes();
+        // Снимок лица не должен оставаться на терминале.
+        if (!kIsWeb) {
+          try {
+            await File(shot.path).delete();
+          } catch (_) {}
+        }
       }
       result = await app.verifyFace(bytes);
     } catch (_) {
@@ -121,6 +138,17 @@ class _FaceScreenState extends State<FaceScreen> {
             textAlign: TextAlign.center,
             style: TextStyle(color: cs.error, fontSize: 16),
           ),
+        ),
+      );
+    } else if (_fakeCamera) {
+      inner = const Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.videocam_off, size: 48),
+            SizedBox(height: 8),
+            Text('DEV: виртуальная камера', textAlign: TextAlign.center),
+          ],
         ),
       );
     } else if (ctrl == null) {
@@ -210,7 +238,7 @@ class _FaceScreenState extends State<FaceScreen> {
                     width: double.infinity,
                     height: 64,
                     child: FilledButton.icon(
-                      onPressed: (_ctrl == null || _busy) ? null : _scan,
+                      onPressed: ((_ctrl == null && !_fakeCamera) || _busy) ? null : _scan,
                       icon: _busy
                           ? const SizedBox(
                               width: 22,

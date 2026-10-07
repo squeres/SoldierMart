@@ -72,6 +72,7 @@
     <nav id="tabs">
       <button data-tab="orders" class="on">Заказы</button>
       <button data-tab="locked">Блокировки</button>
+      <button data-tab="history">История человека</button>
       <button data-tab="balance">Баланс</button>
       <button data-tab="people">Люди и лица</button>
     </nav>
@@ -92,6 +93,19 @@
         </select>
       </div>
       <div id="ordersBox"></div>
+    </section>
+
+    <section id="tab-history" hidden>
+      <div class="card">
+        <h2>Найти человека</h2>
+        <div class="row">
+          <input id="hQuery" placeholder="Имя или ИИН (пусто = все)" autocomplete="off">
+          <button id="hBtn">Найти</button>
+        </div>
+        <small>Просмотр чужой истории записывается в журнал сервера.</small>
+      </div>
+      <div id="hUsers"></div>
+      <div id="hDetail"></div>
     </section>
 
     <section id="tab-locked" hidden>
@@ -215,10 +229,10 @@ $('tabs').addEventListener('click', (e) => {
   if (!b) return;
   tab = b.dataset.tab;
   for (const x of $('tabs').children) x.classList.toggle('on', x === b);
-  for (const t of ['orders', 'locked', 'balance', 'people']) $('tab-' + t).hidden = t !== tab;
+  for (const t of ['orders', 'history', 'locked', 'balance', 'people']) $('tab-' + t).hidden = t !== tab;
   loadTab();
 });
-const loaders = { orders: loadOrders, locked: loadLocked, balance: loadLedger, people: loadPeople };
+const loaders = { orders: loadOrders, history: loadUsers, locked: loadLocked, balance: loadLedger, people: loadPeople };
 function loadTab() { run(loaders[tab]); }
 
 const empty = (text) => h('div', { class: 'empty' }, text);
@@ -270,6 +284,64 @@ $('pickBtn').onclick = () => {
   pickup({ code });
 };
 $('pickCode').addEventListener('keydown', (e) => e.key === 'Enter' && $('pickBtn').click());
+
+// ---------- история человека ----------
+
+async function loadUsers() {
+  const q = $('hQuery').value.trim();
+  const { users } = await api('GET', '/admin/users?q=' + encodeURIComponent(q));
+  const box = $('hUsers');
+  box.replaceChildren();
+  if (!users.length) return box.append(empty('Никого не найдено.'));
+  box.append(h('table', {},
+    h('thead', {}, h('tr', {}, h('th', {}, 'Имя'), h('th', {}, 'Часть'), h('th', {}, 'ИИН'),
+      h('th', { class: 'num' }, 'Баланс'), h('th', {}))),
+    h('tbody', {}, users.map((u) => h('tr', {},
+      h('td', {}, u.name), h('td', {}, u.unit), h('td', { class: 'code' }, u.iin),
+      h('td', { class: 'num' }, tenge(u.balance)),
+      h('td', { class: 'act' }, h('button', { onclick: () => showHistory(u) }, 'История')),
+    ))),
+  ));
+}
+async function showHistory(u) {
+  await run(async () => {
+    const [{ orders }, { ledger }] = await Promise.all([
+      api('GET', '/admin/orders?status=all&iin=' + u.iin),
+      api('GET', '/admin/ledger?iin=' + u.iin),
+    ]);
+    const box = $('hDetail');
+    box.replaceChildren(h('div', { class: 'card' },
+      h('h2', {}, `${u.name}: заказы (${orders.length})`),
+      orders.length ? h('table', {},
+        h('thead', {}, h('tr', {}, h('th', {}, 'Создан'), h('th', {}, 'Состав'),
+          h('th', { class: 'num' }, 'Сумма'), h('th', {}, 'Статус'), h('th', {}))),
+        h('tbody', {}, orders.map((o) => h('tr', {},
+          h('td', {}, when(o.createdAt)),
+          h('td', {}, o.items.map((i) => h('div', { class: 'items' }, `${i.nameRu} × ${i.qty}`))),
+          h('td', { class: 'num' }, tenge(o.total)),
+          h('td', {}, h('span', { class: 'tag ' + (o.status === 'picked_up' ? 'ok' : o.status === 'cancelled' ? 'err' : 'warn') },
+            statusRu[o.status]), o.status === 'ready' ? h('div', { class: 'code' }, o.code) : null),
+          h('td', { class: 'act' }, o.status !== 'ready' ? '' : [
+            h('button', { onclick: () => pickup({ id: o.id }, o).then(() => showHistory(u)) }, 'Выдать'),
+          ]),
+        ))),
+      ) : empty('Заказов нет.'),
+    ), h('div', { class: 'card' },
+      h('h2', {}, 'Движение денег'),
+      ledger.length ? h('table', {},
+        h('thead', {}, h('tr', {}, h('th', {}, 'Время'), h('th', {}, 'Тип'),
+          h('th', { class: 'num' }, 'Сумма'), h('th', { class: 'num' }, 'Остаток'), h('th', {}, 'Примечание'))),
+        h('tbody', {}, ledger.map((r) => h('tr', {},
+          h('td', {}, when(r.t)), h('td', {}, typeRu[r.type] || r.type),
+          h('td', { class: 'num' }, (r.amount > 0 ? '+' : '') + new Intl.NumberFormat('ru-RU').format(r.amount)),
+          h('td', { class: 'num' }, tenge(r.balance)), h('td', {}, r.note || ''),
+        ))),
+      ) : empty('Операций нет.'),
+    ));
+  });
+}
+$('hBtn').onclick = loadTab;
+$('hQuery').addEventListener('keydown', (e) => e.key === 'Enter' && loadTab());
 
 // ---------- блокировки ----------
 

@@ -52,6 +52,15 @@ class FakeBackend implements Backend {
     return orderResult;
   }
 
+  List<OrderRecord> ordersResult = const [];
+  Object? ordersError;
+
+  @override
+  Future<List<OrderRecord>> orders() async {
+    if (ordersError != null) throw ordersError!;
+    return ordersResult;
+  }
+
   @override
   Future<void> logout() async => logoutCalls++;
 }
@@ -179,5 +188,55 @@ void main() {
     final b = FakeBackend()..catalogError = ApiException(null);
     final app = await _loggedIn(b);
     expect(app.catalogFailed, isTrue);
+  });
+
+  test('история заказов загружается и очищается при выходе', () async {
+    final b = FakeBackend()
+      ..ordersResult = [
+        OrderRecord(
+          id: 'o1',
+          code: '111222',
+          total: 400,
+          status: OrderStatus.ready,
+          createdAt: DateTime(2026, 10, 7, 12, 30),
+          items: const [OrderLineRecord(nameRu: 'Вода', nameKk: 'Су', price: 200, qty: 2)],
+        ),
+      ];
+    final app = await _loggedIn(b);
+    await app.loadOrders();
+    expect(app.orders.length, 1);
+    expect(app.orders.first.status, OrderStatus.ready);
+    app.logout();
+    expect(app.orders, isEmpty); // следующий человек не увидит чужие заказы
+  });
+
+  test('ошибка истории помечается, истёкший сеанс возвращает на вход', () async {
+    final b = FakeBackend()..ordersError = ApiException(null);
+    final app = await _loggedIn(b);
+    await app.loadOrders();
+    expect(app.ordersFailed, isTrue);
+    expect(app.loggedIn, isTrue);
+
+    b.ordersError = ApiException(401);
+    await app.loadOrders();
+    expect(app.loggedIn, isFalse);
+    expect(app.loginNotice, 'sessionExpired');
+  });
+
+  test('заказ из ответа сервера разбирается, неизвестный статус не ломает разбор', () {
+    final o = OrderRecord.fromJson({
+      'id': 'x',
+      'code': '123456',
+      'total': 700,
+      'status': 'picked_up',
+      'createdAt': '2026-10-07T18:54:27.352Z',
+      'items': [
+        {'productId': 'f1', 'nameRu': 'Печенье', 'nameKk': 'Печенье', 'price': 350, 'qty': 2},
+      ],
+    });
+    expect(o.status, OrderStatus.pickedUp);
+    expect(o.items.single.qty, 2);
+    expect(OrderRecord.fromJson({...{'id': 'y', 'code': '1', 'total': 1, 'createdAt': 'bad', 'items': []}, 'status': 'zzz'}).status,
+        OrderStatus.ready);
   });
 }

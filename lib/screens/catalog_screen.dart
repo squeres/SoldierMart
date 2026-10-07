@@ -4,6 +4,7 @@ import '../models/product.dart';
 import '../state/app_state.dart';
 import '../theme/app_theme.dart';
 import 'cart_screen.dart';
+import 'orders_screen.dart';
 
 class CatalogScreen extends StatelessWidget {
   const CatalogScreen({super.key});
@@ -45,6 +46,14 @@ class CatalogScreen extends StatelessWidget {
           ],
         ),
         actions: [
+          IconButton(
+            iconSize: 30,
+            tooltip: s.t('history'),
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const OrdersScreen()),
+            ),
+            icon: const Icon(Icons.receipt_long),
+          ),
           IconButton(
             iconSize: 30,
             tooltip: s.t('cart'),

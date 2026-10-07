@@ -62,6 +62,12 @@ class S {
       'currency': '₸',
       'pcs': 'шт.',
       'max': 'Больше нет в наличии',
+      'history': 'Мои заказы',
+      'historyEmpty': 'Заказов пока нет',
+      'historyFailed': 'Не удалось загрузить заказы.',
+      'statusReady': 'Ждёт выдачи',
+      'statusPickedUp': 'Выдан',
+      'statusCancelled': 'Отменён, деньги возвращены',
     },
     'kk': {
       'tagline': 'Әскери қызметшілерге арналған дүкен',
@@ -119,6 +125,12 @@ class S {
       'currency': '₸',
       'pcs': 'дана',
       'max': 'Қоймада басқа жоқ',
+      'history': 'Менің тапсырыстарым',
+      'historyEmpty': 'Тапсырыстар әзірге жоқ',
+      'historyFailed': 'Тапсырыстарды жүктеу мүмкін болмады.',
+      'statusReady': 'Берілуін күтуде',
+      'statusPickedUp': 'Берілді',
+      'statusCancelled': 'Бас тартылды, ақша қайтарылды',
     },
   };
 

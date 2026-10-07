@@ -305,3 +305,45 @@ test('в списке заказов для панели есть имя, ИИН
   assert.equal(list.json.orders[0].name, 'Серик Алимов');
   assert.equal(list.json.orders[0].iin.includes(USER.iin), false);
 });
+
+// ---------- история заказов ----------
+
+test('история заказов привязана к владельцу: чужие заказы не видны', async () => {
+  const { base } = await start();
+  const other = { iin: '980107304562', pin: '4321' };
+  const l2 = await call(base, 'POST', '/api/login', { body: other });
+  const t2 = (await face(base, l2.json.pendingToken)).json.sessionToken;
+  const t1 = await fullLogin(base);
+  await order(base, t1, 'f1', 1);
+  await order(base, t2, 'f8', 1);
+  const mine = (await call(base, 'GET', '/api/orders', { token: t1 })).json.orders;
+  assert.equal(mine.length, 1);
+  assert.equal(mine[0].items[0].productId, 'f1');
+  assert.equal(mine[0].iin, undefined, 'ИИН в ответ не попадает');
+  assert.equal((await call(base, 'GET', '/api/orders')).status, 401);
+});
+
+test('дежурный смотрит историю человека: все статусы, поиск, запись в журнал', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sm-hist-'));
+  const { base } = await start({ auditPath: path.join(dir, 'audit.log') });
+  const token = await fullLogin(base);
+  const a = await order(base, token, 'f1', 1);
+  await order(base, token, 'f8', 1);
+  await admin(base, 'POST', '/admin/orders/cancel', { id: a.json.order.id });
+
+  const all = await admin(base, 'GET', `/admin/orders?status=all&iin=${USER.iin}`);
+  assert.equal(all.json.orders.length, 2);
+  assert.deepEqual(all.json.orders.map((o) => o.status).sort(), ['cancelled', 'ready']);
+  assert.equal((await admin(base, 'GET', '/admin/orders?status=all&iin=123')).status, 400);
+  assert.equal((await call(base, 'GET', `/admin/orders?status=all&iin=${USER.iin}`)).status, 403);
+
+  const found = await admin(base, 'GET', '/admin/users?q=' + encodeURIComponent('серик'));
+  assert.equal(found.json.users.length, 1);
+  assert.equal(found.json.users[0].iin, USER.iin);
+  assert.equal((await admin(base, 'GET', '/admin/users')).json.users.length, 2);
+
+  const log = fs.readFileSync(path.join(dir, 'audit.log'), 'utf8');
+  assert.ok(log.includes('admin_view_orders'));
+  assert.equal(log.includes(USER.iin), false, 'ИИН в журнале замаскирован');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
