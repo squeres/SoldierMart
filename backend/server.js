@@ -103,6 +103,7 @@ app.server.listen(PORT, HOST, () => {
     const n = Object.keys(app.store.data.faceTemplates).length;
     console.log(`  Распознавание лица: включено (порог ${face.threshold}). Эталонов: ${n}.`);
     console.log(`  Регистрация лиц: http://${HOST}:${PORT}/enroll`);
+    console.log(`  Панель дежурного: ${tls ? 'https' : 'http'}://${HOST}:${PORT}/panel`);
     if (n === 0) {
       console.log('  Пока ни у кого нет эталона лица, войти не получится: сначала зарегистрируйте лицо.');
     }

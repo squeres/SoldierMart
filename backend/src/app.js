@@ -483,9 +483,10 @@ export async function createApp(options = {}) {
   // ---------- маршрутизация ----------
 
   const enrollPage = fs.readFileSync(new URL('../public/enroll.html', import.meta.url));
+  const panelPage = fs.readFileSync(new URL('../public/admin.html', import.meta.url));
 
   const ORDER_STATUSES = new Set(['ready', 'picked_up', 'cancelled']);
-  const adminOrder = (o) => ({ ...publicOrder(o), iin: maskIin(o.iin) });
+  const adminOrder = (o) => ({ ...publicOrder(o), iin: maskIin(o.iin), name: db().users[o.iin]?.name });
 
   /** Находит заказ по id или по 6-значному коду выдачи (код ищем только среди готовых). */
   function findOrder({ id, code }) {
@@ -558,6 +559,19 @@ export async function createApp(options = {}) {
         'Cache-Control': 'no-store',
       });
       return res.end(enrollPage);
+    }
+
+    if (m === 'GET' && p === '/panel') {
+      // Панель дежурного. Страница сама по себе без секретов, все данные идут запросами /admin/* с ключом.
+      res.writeHead(200, {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Cache-Control': 'no-store',
+        'X-Content-Type-Options': 'nosniff',
+        'Referrer-Policy': 'no-referrer',
+        'Content-Security-Policy':
+          "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+      });
+      return res.end(panelPage);
     }
 
     if (m === 'POST' && p === '/api/login') return login(req, res);

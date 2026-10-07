@@ -284,3 +284,24 @@ test('проверка живости: отказ или сбой не пуск�
   );
   assert.equal(await mk({ check: async () => 'yes' }).verify(args), 'noMatch');
 });
+
+// ---------- панель дежурного ----------
+
+test('панель дежурного отдаётся с защитными заголовками и не содержит данных', async () => {
+  const { base } = await start();
+  const r = await fetch(base + '/panel');
+  assert.equal(r.status, 200);
+  assert.ok(r.headers.get('content-security-policy').includes("frame-ancestors 'none'"));
+  const html = await r.text();
+  assert.ok(html.includes('панель дежурного'));
+  assert.equal(html.includes(USER.iin), false);
+});
+
+test('в списке заказов для панели есть имя, ИИН замаскирован', async () => {
+  const { base } = await start();
+  const token = await fullLogin(base);
+  await call(base, 'POST', '/api/orders', { token, body: { items: [{ productId: 'f1', qty: 1 }] } });
+  const list = await admin(base, 'GET', '/admin/orders');
+  assert.equal(list.json.orders[0].name, 'Серик Алимов');
+  assert.equal(list.json.orders[0].iin.includes(USER.iin), false);
+});
