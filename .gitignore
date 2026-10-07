@@ -1,0 +1,24 @@
+# Данные и секреты сервера (биометрия, ПИН-хэши, ключи, журнал)
+backend/data/
+backend/node_modules/
+*.key
+.env
+
+# Сборка и кэши Flutter / Dart
+build/
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+
+# Flutter SDK, скопированный внутрь проекта (у него свой .git, 1.2 ГБ)
+/flutter/
+
+# IDE и ОС
+.idea/
+*.iml
+.vscode/
+.DS_Store
+Thumbs.db

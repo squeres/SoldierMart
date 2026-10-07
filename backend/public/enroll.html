@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SoldierMart: регистрация лица</title>
+<style>
+  :root { color-scheme: dark; }
+  body { font-family: system-ui, sans-serif; background: #021024; color: #C1E8FF; margin: 0; padding: 20px; }
+  main { max-width: 520px; margin: 0 auto; }
+  h1 { font-size: 22px; }
+  label { display: block; margin: 14px 0 4px; font-size: 14px; color: #7DA0CA; }
+  input { width: 100%; box-sizing: border-box; padding: 12px; font-size: 18px; border-radius: 10px;
+          border: 1px solid #5483B3; background: #052659; color: #C1E8FF; }
+  video { width: 100%; border-radius: 14px; background: #052659; margin-top: 14px; transform: scaleX(-1); }
+  button { width: 100%; margin-top: 12px; padding: 14px; font-size: 18px; border: 0; border-radius: 10px;
+           background: #5483B3; color: #021024; font-weight: 600; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  #msg { margin-top: 14px; min-height: 48px; font-size: 16px; }
+  .ok { color: #8fe3a0; } .err { color: #ff9b9b; }
+  small { color: #7DA0CA; display: block; margin-top: 10px; line-height: 1.4; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Регистрация лица военнослужащего</h1>
+  <label for="key">Ключ дежурного</label>
+  <input id="key" type="password" autocomplete="off">
+  <label for="iin">ИИН (12 цифр)</label>
+  <input id="iin" inputmode="numeric" maxlength="12" autocomplete="off">
+  <video id="v" autoplay playsinline muted></video>
+  <button id="shot" disabled>Сделать снимок и сохранить</button>
+  <button id="wipe" style="background:#052659;color:#C1E8FF;border:1px solid #5483B3">Удалить эталон этого ИИН</button>
+  <div id="msg"></div>
+  <small>
+    Лицо должно быть крупно в кадре, один человек, ровный свет, без очков и головного убора.
+    Сделайте 2–3 снимка с небольшими поворотами головы: так распознавание надёжнее.
+    Сохраняется только числовой шаблон лица, сам снимок на сервере не хранится.
+  </small>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const msg = (t, cls) => { $('msg').textContent = t; $('msg').className = cls || ''; };
+const errors = {
+  face_noFace: 'Лицо не найдено или слишком маленькое. Подойдите ближе.',
+  face_multiple: 'В кадре несколько лиц. Должен быть один человек.',
+  face_badImage: 'Снимок не удалось прочитать.',
+  unknown_user: 'Такого ИИН нет в базе.',
+  face_demo_mode: 'Сервер запущен в демо-режиме (FACE_MODE=demo).',
+  forbidden: 'Неверный ключ дежурного.',
+};
+const headers = () => ({ 'Content-Type': 'application/json', 'X-Admin-Key': $('key').value.trim() });
+async function call(path, body) {
+  const r = await fetch(path, { method: 'POST', headers: headers(), body: JSON.stringify(body) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(errors[j.error] || 'Ошибка: ' + (j.error || r.status));
+  return j;
+}
+navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: false })
+  .then((s) => { $('v').srcObject = s; $('shot').disabled = false; })
+  .catch(() => msg('Нет доступа к камере. Разрешите камеру в браузере.', 'err'));
+
+$('shot').onclick = async () => {
+  const iin = $('iin').value.trim();
+  if (!/^\d{12}$/.test(iin)) return msg('Введите ИИН из 12 цифр.', 'err');
+  const v = $('v');
+  if (!v.videoWidth) return msg('Камера ещё не готова.', 'err');
+  const c = document.createElement('canvas');
+  c.width = v.videoWidth; c.height = v.videoHeight;
+  c.getContext('2d').drawImage(v, 0, 0);
+  const image = c.toDataURL('image/jpeg', 0.92).split(',')[1];
+  $('shot').disabled = true; msg('Обработка…');
+  try {
+    const j = await call('/admin/enroll', { iin, image });
+    msg('Сохранено. Снимков в эталоне: ' + j.templates + ' (максимум 3, новые вытесняют старые).', 'ok');
+  } catch (e) { msg(e.message, 'err'); }
+  $('shot').disabled = false;
+};
+$('wipe').onclick = async () => {
+  const iin = $('iin').value.trim();
+  if (!/^\d{12}$/.test(iin)) return msg('Введите ИИН из 12 цифр.', 'err');
+  try { await call('/admin/unenroll', { iin }); msg('Эталон удалён.', 'ok'); }
+  catch (e) { msg(e.message, 'err'); }
+};
+</script>
+</body>
+</html>

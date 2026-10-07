@@ -1,0 +1,22 @@
+{
+  "name": "soldiermart-server",
+  "version": "1.0.0",
+  "description": "Локальный сервер SoldierMart.kz: аккаунты, каталог, баланс, заказы, блокировки",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test",
+    "enroll": "node enroll.js"
+  },
+  "dependencies": {
+    "@tensorflow/tfjs": "^4.22.0",
+    "@tensorflow/tfjs-backend-wasm": "^4.22.0",
+    "@vladmandic/face-api": "^1.7.15",
+    "jpeg-js": "^0.4.4",
+    "pngjs": "^7.0.0"
+  }
+}
