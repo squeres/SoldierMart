@@ -255,4 +255,37 @@ void main() {
     expect(AssistantReply.fromJson({'reply': 'x', 'cart': null}).cart, isNull);
   });
 
+  test('таймер бездействия: разговор с помощником не даёт выйти, молчание даёт', () async {
+    final b = _SlowAssistant();
+    final app = AppState(backend: b, idleTimeout: const Duration(milliseconds: 400));
+    await app.checkCredentials('0', '0000');
+    await app.verifyFace(Uint8List(1));
+    await Future<void>.delayed(Duration.zero);
+
+    // вопрос идёт 250 мс, ответ перезапускает отсчёт: через 600 мс после старта ещё внутри
+    await Future<void>.delayed(const Duration(milliseconds: 250));
+    await app.askAssistant('привет');
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+    expect(app.loggedIn, isTrue, reason: 'ответ помощника считается активностью');
+
+    // ввод текста в поле тоже активность
+    for (var i = 0; i < 12; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 60));
+      app.touch();
+    }
+    expect(app.loggedIn, isTrue);
+
+    // а без активности выходит
+    await Future<void>.delayed(const Duration(milliseconds: 600));
+    expect(app.loggedIn, isFalse);
+    app.dispose();
+  });
+}
+
+class _SlowAssistant extends FakeBackend {
+  @override
+  Future<AssistantReply> assistant(String message, String lang) async {
+    await Future<void>.delayed(const Duration(milliseconds: 200));
+    return const AssistantReply(reply: 'ответ');
+  }
 }

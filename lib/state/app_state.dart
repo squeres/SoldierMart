@@ -146,11 +146,24 @@ class AppState extends ChangeNotifier {
 
   /// Вызывается при любом касании экрана.
   ///
+  /// Сбрасывается любой активностью: касанием, прокруткой, нажатием клавиши и работой
+  /// с помощником. Частые события (например, движение пальца) обрабатываются не чаще
+  /// раза в секунду, чтобы не пересоздавать таймер на каждый пиксель.
   void touch() {
+    if (!loggedIn && !hasPending) {
+      _idle?.cancel();
+      return;
+    }
+    final now = DateTime.now();
+    final gap = Duration(milliseconds: min(1000, idleTimeout.inMilliseconds ~/ 10));
+    final last = _lastTouch;
+    if (_idle != null && _idle!.isActive && last != null && now.difference(last) < gap) return;
+    _lastTouch = now;
     _idle?.cancel();
-    if (!loggedIn && !hasPending) return;
     _idle = Timer(idleTimeout, logout);
   }
+
+  DateTime? _lastTouch;
 
   // ---------- каталог ----------
 
@@ -269,6 +282,7 @@ class AppState extends ChangeNotifier {
   Future<void> askAssistant(String text) async {
     final q = text.trim();
     if (q.isEmpty || assistantBusy || !loggedIn) return;
+    touch(); // человек пользуется терминалом, даже если не касается экрана (печатает, ждёт ответ)
     chat.add(ChatMessage.user(q));
     assistantBusy = true;
     notifyListeners();
@@ -290,6 +304,7 @@ class AppState extends ChangeNotifier {
     if (!loggedIn) return; // вышли, пока ждали ответ
     chat.add(reply);
     assistantBusy = false;
+    touch(); // ответ пришёл: даём время его прочитать
     notifyListeners();
   }
 
