@@ -11,13 +11,16 @@
     "start": "node server.js",
     "dev": "node dev.js",
     "test": "node --test",
-    "enroll": "node enroll.js"
+    "enroll": "node enroll.js",
+    "migrate-json": "node migrate-json.js"
   },
   "dependencies": {
+    "@electric-sql/pglite": "^0.5.8",
     "@tensorflow/tfjs": "^4.22.0",
     "@tensorflow/tfjs-backend-wasm": "^4.22.0",
     "@vladmandic/face-api": "^1.7.15",
     "jpeg-js": "^0.4.4",
+    "pg": "^8.23.1",
     "pngjs": "^7.0.0"
   }
 }

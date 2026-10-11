@@ -36,24 +36,20 @@ const DEMO_USERS = [
   { iin: '980107304562', pin: '4321', name: 'Дархан Нурпеисов', unit: 'в/ч 54321, Караганда', balance: 8000 },
 ];
 
-export async function seedData() {
-  const users = {};
-  for (const u of DEMO_USERS) {
-    users[u.iin] = {
-      iin: u.iin,
-      name: u.name,
-      unit: u.unit,
-      balance: u.balance,
-      ...(await hashPin(u.pin)),
-    };
-  }
-  return {
-    users,
-    products: structuredClone(PRODUCTS),
-    favorites: {},
-    orders: [],
-    ledger: [],
-    faceTemplates: {},
-    security: { locked: {}, pinFails: {}, faceFails: {}, strikes: {} },
-  };
+/**
+ * Первичное наполнение пустой базы. Каталог добавляется, если товаров нет.
+ * Демо-пользователи (с известными ПИН) добавляются только по явной просьбе
+ * (`demoUsers: true`) и только если в базе вообще нет людей: в боевой базе их быть не должно.
+ */
+export async function seedDatabase(db, repo, { demoUsers = false } = {}) {
+  await db.tx(async (t) => {
+    const { rows } = await t.query('SELECT (SELECT count(*) FROM products)::int AS p, (SELECT count(*) FROM users)::int AS u');
+    if (rows[0].p === 0) await repo.insertProducts(t, PRODUCTS);
+    if (demoUsers && rows[0].u === 0) {
+      for (const u of DEMO_USERS) {
+        const { pinSalt, pinHash } = await hashPin(u.pin);
+        await repo.createUser(t, { iin: u.iin, name: u.name, unit: u.unit, balance: u.balance, pinSalt, pinHash });
+      }
+    }
+  });
 }

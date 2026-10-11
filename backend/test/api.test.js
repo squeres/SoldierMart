@@ -17,12 +17,13 @@ after(async () => {
   for (const fn of cleanups) await fn();
 });
 
-async function start(opts = {}) {
+// По умолчанию каждый тест получает свежую встроенную PostgreSQL в памяти.
+// persist: true кладёт базу в папку, чтобы проверить перезапуск сервера.
+async function start({ persist = false, ...opts } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sm-test-'));
-  const dbPath = path.join(dir, 'db.json');
   const auditPath = path.join(dir, 'audit.log');
   const app = await createApp({
-    dbPath,
+    ...(persist ? { dataDir: dir } : {}),
     auditPath,
     adminKey: ADMIN,
     rateLimitPerMin: 100000,
@@ -34,7 +35,7 @@ async function start(opts = {}) {
     await app.close();
     fs.rmSync(dir, { recursive: true, force: true });
   });
-  return { app, base, dir, dbPath, auditPath };
+  return { app, base, dir, auditPath };
 }
 
 async function call(base, method, url, { token, body, admin } = {}) {
@@ -358,13 +359,13 @@ test('выход закрывает сеанс', async () => {
 });
 
 test('данные, блокировки и ПИН-хэши переживают перезапуск сервера', async () => {
-  const first = await start();
+  const first = await start({ persist: true });
   const token = await fullLogin(first.base);
   await call(first.base, 'POST', '/api/orders', { token, body: { items: [{ productId: 'f1', qty: 1 }] } });
   for (let i = 0; i < 5; i++) await login(first.base, OTHER, '0000');
   await first.app.close();
 
-  const second = await createApp({ dbPath: first.dbPath, adminKey: ADMIN, rateLimitPerMin: 100000 });
+  const second = await createApp({ dataDir: first.dir, adminKey: ADMIN, rateLimitPerMin: 100000 });
   await new Promise((r) => second.server.listen(0, '127.0.0.1', r));
   cleanups.push(() => second.close());
   const base2 = `http://127.0.0.1:${second.server.address().port}`;
@@ -373,8 +374,12 @@ test('данные, блокировки и ПИН-хэши переживают
   const t = await fullLogin(base2, USER);
   assert.equal((await call(base2, 'GET', '/api/me', { token: t })).json.balance, 25000 - 650);
 
-  const raw = fs.readFileSync(first.dbPath, 'utf8');
-  assert.equal(raw.includes('"1234"'), false, 'ПИН не должен храниться открытым текстом');
+  const { rows } = await second.db.query('SELECT pin_salt, pin_hash FROM users');
+  assert.ok(rows.length >= 2);
+  for (const r of rows) {
+    assert.equal(`${r.pin_salt}${r.pin_hash}`.includes('1234'), false, 'ПИН не должен храниться открытым текстом');
+    assert.match(r.pin_hash, /^[0-9a-f]{64}$/);
+  }
 });
 
 test('в журнале нет ПИН, полного ИИН и снимков', async () => {

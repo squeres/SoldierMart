@@ -26,9 +26,7 @@ after(async () => {
 
 async function start() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sm-face-'));
-  const dbPath = path.join(dir, 'db.json');
   const app = await createApp({
-    dbPath,
     adminKey: ADMIN,
     rateLimitPerMin: 100000,
     face: verifier,
@@ -39,7 +37,7 @@ async function start() {
     await app.close();
     fs.rmSync(dir, { recursive: true, force: true });
   });
-  return { base, dbPath };
+  return { base, app };
 }
 
 async function call(base, method, url, { body, admin } = {}) {
@@ -203,15 +201,16 @@ test('удаление эталона закрывает вход по лицу'
 });
 
 test('в базе только числа: снимок не сохраняется, ИИН в списке замаскирован', async () => {
-  const { base, dbPath } = await start();
+  const { base, app } = await start();
   await enroll(base, USER.iin, 's1_0.jpg');
-  const raw = fs.readFileSync(dbPath, 'utf8');
-  const db = JSON.parse(raw);
-  assert.equal(db.faceTemplates[USER.iin].length, 1);
-  assert.equal(db.faceTemplates[USER.iin][0].length, 128);
-  assert.ok(db.faceTemplates[USER.iin][0].every((x) => typeof x === 'number'));
+  const { rows } = await app.db.query('SELECT descriptor FROM face_templates WHERE iin = $1', [USER.iin]);
+  assert.equal(rows.length, 1);
+  const raw = rows[0].descriptor;
+  const vec = JSON.parse(raw);
+  assert.equal(vec.length, 128);
+  assert.ok(vec.every((x) => typeof x === 'number'));
   assert.ok(!raw.includes(b64('s1_0.jpg').slice(0, 200)));
-  assert.ok(raw.length < 60_000);
+  assert.ok(raw.length < 5_000);
 
   const list = await call(base, 'GET', '/admin/enrolled', { admin: ADMIN });
   assert.ok(!list.text.includes(USER.iin));
@@ -220,7 +219,7 @@ test('в базе только числа: снимок не сохраняет�
 
 test('шаблоны переживают перезапуск сервера', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sm-face-r-'));
-  const opts = { dbPath: path.join(dir, 'db.json'), adminKey: ADMIN, rateLimitPerMin: 100000, face: verifier };
+  const opts = { dataDir: dir, adminKey: ADMIN, rateLimitPerMin: 100000, face: verifier };
   const run = async (fn) => {
     const app = await createApp(opts);
     await new Promise((r) => app.server.listen(0, '127.0.0.1', r));
@@ -243,12 +242,10 @@ test('страница регистрации отдаётся, в демо-ре
   assert.equal(page.status, 200);
   assert.ok(page.text.includes('Регистрация лица'));
 
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sm-face-d-'));
-  const app = await createApp({ dbPath: path.join(dir, 'db.json'), adminKey: ADMIN });
+  const app = await createApp({ adminKey: ADMIN });
   await new Promise((r) => app.server.listen(0, '127.0.0.1', r));
   const b = `http://127.0.0.1:${app.server.address().port}`;
   const r = await enroll(b, USER.iin, 's1_0.jpg');
   assert.equal(r.status, 501);
   await app.close();
-  fs.rmSync(dir, { recursive: true, force: true });
 });

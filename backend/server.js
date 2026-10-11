@@ -73,8 +73,15 @@ if (process.env.FACE_MODE === 'demo') {
   }
 }
 
+// База: PostgreSQL по DATABASE_URL (бой) или встроенная в папке данных (разработка, один сервер).
+const databaseUrl = process.env.DATABASE_URL || undefined;
+// Демо-пользователи с известными ПИН нужны только для разработки: с настоящей базой их не создаём.
+const seedDemoUsers = process.env.SEED_DEMO_USERS === '1' || (!databaseUrl && process.env.SEED_DEMO_USERS !== '0');
+
 const app = await createApp({
-  dbPath: path.join(dataDir, 'db.json'),
+  databaseUrl,
+  dataDir,
+  seedDemoUsers,
   auditPath: path.join(dataDir, 'audit.log'),
   adminKey,
   secretKey: dataKey,
@@ -94,28 +101,36 @@ if (process.env.DEV_TEST_USER === '1') {
   }
   const { hashPin } = await import('./src/pin.js');
   const iin = '900101300007'; // вымышленный, проходит проверку контрольной цифры
-  const db = app.store.data;
-  db.users[iin] ??= {
-    iin,
-    name: 'Тестовый Солдат',
-    unit: 'в/ч 00000, тест',
-    balance: 50000,
-    ...(await hashPin('1111')),
-  };
-  db.faceTemplates[iin] ??= [new Array(128).fill(0)];
-  delete db.security.locked[iin];
-  delete db.security.pinFails[iin];
-  delete db.security.faceFails[iin];
-  await app.store.save();
+  if (!(await app.repo.getUser(iin))) {
+    await app.repo.createUser(app.db, {
+      iin,
+      name: 'Тестовый Солдат',
+      unit: 'в/ч 00000, тест',
+      balance: 50000,
+      ...(await hashPin('1111')),
+    });
+  }
+  if (!(await app.repo.listTemplates(iin)).length) {
+    await app.repo.addTemplate(iin, new Array(128).fill(0), { replace: true, keep: 3 });
+  }
+  await app.repo.unlock(iin);
 }
 
-app.server.listen(PORT, HOST, () => {
+// Старые данные из db.json (версия до PostgreSQL) сами не переносятся.
+const legacyJson = path.join(dataDir, 'db.json');
+const legacyNote =
+  fs.existsSync(legacyJson) && !fs.existsSync(legacyJson + '.imported')
+    ? 'Найден старый файл db.json: перенесите данные командой `npm run migrate-json`.'
+    : null;
+
+app.server.listen(PORT, HOST, async () => {
   console.log('SoldierMart сервер запущен');
   if (process.env.DEV_TEST_USER === '1') {
     console.log('  ТЕСТОВЫЙ АККАУНТ (только для разработки): ИИН 900101300007, ПИН 1111, лицо «зарегистрировано».');
   }
   console.log(`  Адрес:        ${tls ? 'https' : 'http'}://${HOST}:${PORT}`);
-  console.log(`  Данные:       ${dataDir}`);
+  console.log(`  База данных:  ${databaseUrl ? 'PostgreSQL (DATABASE_URL)' : `встроенная, ${path.join(dataDir, 'pgdata')} (для одного сервера; в бою задайте DATABASE_URL)`}`);
+  if (legacyNote) console.log(`  ${legacyNote}`);
   // Сам ключ в консоль не печатаем: она попадает в журналы и на экраны.
   console.log(
     process.env.ADMIN_KEY
@@ -125,12 +140,12 @@ app.server.listen(PORT, HOST, () => {
   console.log('  Шаблоны лиц в базе: зашифрованы (AES-256-GCM)');
   if (!tls) console.log('  ВНИМАНИЕ: HTTPS выключен (TLS_CERT/TLS_KEY). Для боя обязателен.');
   if (!corsOrigins) console.log('  ВНИМАНИЕ: CORS открыт для всех (CORS_ORIGINS не задан). Для боя ограничьте.');
+  console.log(`  Панель дежурного: ${tls ? 'https' : 'http'}://${HOST}:${PORT}/panel`);
   console.log('  ВНИМАНИЕ: защиты от подделки лица (фото, экран) нет, см. README.');
   if (!face.isDemo) {
-    const n = Object.keys(app.store.data.faceTemplates).length;
+    const n = (await app.repo.listEnrolled()).filter((u) => u.templates > 0).length;
     console.log(`  Распознавание лица: включено (порог ${face.threshold}). Эталонов: ${n}.`);
     console.log(`  Регистрация лиц: http://${HOST}:${PORT}/enroll`);
-    console.log(`  Панель дежурного: ${tls ? 'https' : 'http'}://${HOST}:${PORT}/panel`);
     if (n === 0) {
       console.log('  Пока ни у кого нет эталона лица, войти не получится: сначала зарегистрируйте лицо.');
     }
@@ -145,7 +160,7 @@ app.server.listen(PORT, HOST, () => {
 
 for (const sig of ['SIGINT', 'SIGTERM']) {
   process.on(sig, async () => {
-    await app.close(); // дописывает базу на диск
+    await app.close();
     process.exit(0);
   });
 }

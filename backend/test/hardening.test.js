@@ -14,16 +14,20 @@ after(async () => {
   for (const fn of cleanups) await fn();
 });
 
-async function start(opts = {}, dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sm-hard-'))) {
-  const dbPath = path.join(dir, 'db.json');
-  const app = await createApp({ dbPath, adminKey: ADMIN, rateLimitPerMin: 100000, ...opts });
+async function start({ persist = false, ...opts } = {}, dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sm-hard-'))) {
+  const app = await createApp({
+    ...(persist ? { dataDir: dir } : {}),
+    adminKey: ADMIN,
+    rateLimitPerMin: 100000,
+    ...opts,
+  });
   await new Promise((r) => app.server.listen(0, '127.0.0.1', r));
   const base = `http://127.0.0.1:${app.server.address().port}`;
   cleanups.push(async () => {
     await app.close();
     fs.rmSync(dir, { recursive: true, force: true });
   });
-  return { app, base, dir, dbPath };
+  return { app, base, dir };
 }
 
 async function call(base, method, url, { token, body, admin, headers: extra } = {}) {
@@ -53,13 +57,14 @@ test('блокировка по ПИН временная, снимается с
   assert.equal(fifth.json.retryAfterSec, 1);
 
   // имитируем, что время блокировки вышло
-  app.store.data.security.locked[USER.iin].until = new Date(Date.now() - 1).toISOString();
+  await app.db.query("UPDATE security SET locked_until = now() - interval '1 second' WHERE iin = $1", [USER.iin]);
   const ok = await login(base);
   assert.equal(ok.status, 200, 'после срока верный ПИН снова пускает');
 
   // вторая блокировка подряд вдвое дольше
   for (let i = 0; i < 5; i++) await login(base, '0000');
-  const until = Date.parse(app.store.data.security.locked[USER.iin].until);
+  const { rows: lk } = await app.db.query('SELECT locked_until FROM security WHERE iin = $1', [USER.iin]);
+  const until = lk[0].locked_until.getTime();
   assert.ok(until - Date.now() > 1200, 'вторая блокировка длиннее первой');
 });
 
@@ -69,9 +74,9 @@ test('блокировка по лицу жёсткая: сама не сним�
     const l = await login(base);
     await face(base, l.json.pendingToken);
   }
-  const rec = app.store.data.security.locked[USER.iin];
-  assert.equal(rec.reason, 'face');
-  assert.equal(rec.until, undefined);
+  const { rows: lk } = await app.db.query('SELECT locked_reason, locked_until FROM security WHERE iin = $1', [USER.iin]);
+  assert.equal(lk[0].locked_reason, 'face');
+  assert.equal(lk[0].locked_until, null);
   assert.equal((await login(base)).status, 423);
   assert.equal((await admin(base, 'POST', '/admin/unlock', { iin: USER.iin })).json.wasLocked, true);
   assert.equal((await login(base)).status, 200);
@@ -137,17 +142,18 @@ test('выдача заказа: один раз, потом код недейс
 test('отмена заказа возвращает деньги и остатки, баланс сходится с журналом', async () => {
   const { base, app } = await start();
   const token = await fullLogin(base);
-  const stock0 = app.store.data.products.find((p) => p.id === 'f1').stock;
+  const stockOf = async () => (await app.db.query("SELECT stock FROM products WHERE id = 'f1'")).rows[0].stock;
+  const stock0 = await stockOf();
   const o = await order(base, token, 'f1', 3);
-  assert.equal(app.store.data.products.find((p) => p.id === 'f1').stock, stock0 - 3);
+  assert.equal(await stockOf(), stock0 - 3);
 
   const c = await admin(base, 'POST', '/admin/orders/cancel', { id: o.json.order.id });
   assert.equal(c.status, 200);
   assert.equal(c.json.balance, 25000);
-  assert.equal(app.store.data.products.find((p) => p.id === 'f1').stock, stock0);
+  assert.equal(await stockOf(), stock0);
   assert.equal((await admin(base, 'POST', '/admin/orders/cancel', { id: o.json.order.id })).status, 409);
 
-  const sum = app.store.data.ledger.filter((r) => r.iin === USER.iin).reduce((a, r) => a + r.amount, 0);
+  const sum = Number((await app.db.query('SELECT coalesce(sum(amount), 0) AS s FROM ledger WHERE iin = $1', [USER.iin])).rows[0].s);
   assert.equal(sum, 0, 'заказ и возврат взаимно гасятся');
 });
 
@@ -166,12 +172,12 @@ test('пополнение баланса дежурным: запись в жу
 });
 
 test('повтор заказа по requestId после перезапуска не создаёт второй', async () => {
-  const first = await start();
+  const first = await start({ persist: true });
   const token = await fullLogin(first.base);
   const body = { requestId: 'req-1', items: [{ productId: 'f1', qty: 1 }] };
   const a = await call(first.base, 'POST', '/api/orders', { token, body });
   await first.app.close();
-  const second = await createApp({ dbPath: first.dbPath, adminKey: ADMIN, rateLimitPerMin: 100000 });
+  const second = await createApp({ dataDir: first.dir, adminKey: ADMIN, rateLimitPerMin: 100000 });
   await new Promise((r) => second.server.listen(0, '127.0.0.1', r));
   cleanups.push(() => second.close());
   const base2 = `http://127.0.0.1:${second.server.address().port}`;
@@ -182,55 +188,33 @@ test('повтор заказа по requestId после перезапуска
   assert.equal(b.json.balance, 25000 - 650);
 });
 
-// ---------- хранилище ----------
+// ---------- шифрование шаблонов в базе ----------
 
-test('с ключом шаблоны лиц в файле зашифрованы, с неверным ключом база не открывается', async () => {
-  const { app, dbPath, dir } = await start({ secretKey: 'k1' });
-  app.store.data.faceTemplates[USER.iin] = [Array.from({ length: 128 }, (_, i) => 0.123456 + i / 1000)];
-  await app.store.save();
-  const raw = fs.readFileSync(dbPath, 'utf8');
-  assert.equal(raw.includes('0.123456'), false, 'числа шаблона не видны в файле');
-  assert.ok(raw.includes('faceTemplatesEnc'));
+test('с ключом шаблоны лиц в базе зашифрованы, с неверным ключом сервер не стартует', async () => {
+  const { app, dir } = await start({ persist: true, secretKey: 'k1' });
+  await app.repo.addTemplate(USER.iin, Array.from({ length: 128 }, (_, i) => 0.123456 + i / 1000), { replace: true, keep: 3 });
+  const { rows } = await app.db.query('SELECT descriptor FROM face_templates');
+  assert.ok(rows[0].descriptor.startsWith('v1:'));
+  assert.equal(rows[0].descriptor.includes('0.123456'), false, 'числа шаблона не видны в базе');
   await app.close();
 
-  const again = await createApp({ dbPath, adminKey: ADMIN, secretKey: 'k1' });
-  assert.equal(again.store.data.faceTemplates[USER.iin][0].length, 128);
+  const again = await createApp({ dataDir: dir, adminKey: ADMIN, secretKey: 'k1' });
+  assert.equal((await again.repo.listTemplates(USER.iin))[0].length, 128);
   await again.close();
-  await assert.rejects(createApp({ dbPath, adminKey: ADMIN, secretKey: 'wrong' }));
-  await assert.rejects(createApp({ dbPath, adminKey: ADMIN }), /DATA_KEY/);
-  fs.rmSync(dir, { recursive: true, force: true });
+  await assert.rejects(createApp({ dataDir: dir, adminKey: ADMIN, secretKey: 'wrong' }));
+  await assert.rejects(createApp({ dataDir: dir, adminKey: ADMIN }), /DATA_KEY/);
 });
 
-test('ключ можно включить на существующей открытой базе: она перезаписывается зашифрованной', async () => {
-  const { app, dbPath } = await start();
-  app.store.data.faceTemplates[USER.iin] = [[0.987654]];
-  await app.store.save();
+test('ключ можно включить позже: открытые шаблоны шифруются при старте', async () => {
+  const { app, dir } = await start({ persist: true });
+  await app.repo.addTemplate(USER.iin, [0.987654], { replace: true, keep: 3 });
+  assert.equal((await app.db.query('SELECT descriptor FROM face_templates')).rows[0].descriptor.includes('0.987654'), true);
   await app.close();
-  const enc = await createApp({ dbPath, adminKey: ADMIN, secretKey: 'k2' });
+  const enc = await createApp({ dataDir: dir, adminKey: ADMIN, secretKey: 'k2' });
+  const { rows } = await enc.db.query('SELECT descriptor FROM face_templates');
+  assert.ok(rows[0].descriptor.startsWith('v1:'));
+  assert.deepEqual(await enc.repo.listTemplates(USER.iin), [[0.987654]]);
   await enc.close();
-  assert.equal(fs.readFileSync(dbPath, 'utf8').includes('0.987654'), false);
-});
-
-test('резервная копия за день создаётся и хранится не больше 7', async () => {
-  const { app, dbPath, dir } = await start();
-  for (let d = 1; d <= 9; d++) fs.writeFileSync(`${dbPath}.bak-2020-01-0${d}`, '{}');
-  app.store._backupDay = null;
-  await app.store.save();
-  const baks = fs.readdirSync(dir).filter((f) => f.includes('.bak-'));
-  assert.equal(baks.length, 7);
-  assert.ok(baks.some((f) => f.endsWith(new Date().toISOString().slice(0, 10))));
-});
-
-test('много записей подряд не теряются и не ломают файл', async () => {
-  const { app, dbPath } = await start();
-  await Promise.all(
-    Array.from({ length: 50 }, (_, i) => {
-      app.store.data.favorites['x' + i] = ['f1'];
-      return app.store.save();
-    }),
-  );
-  const saved = JSON.parse(fs.readFileSync(dbPath, 'utf8'));
-  assert.equal(Object.keys(saved.favorites).length, 50);
 });
 
 // ---------- сеть ----------
