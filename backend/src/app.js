@@ -9,6 +9,7 @@ import { createRepo, RepoError } from './repo.js';
 import { seedDatabase } from './seed.js';
 import { toKey } from './secret.js';
 import { CATEGORIES, ICONS } from './catalog-meta.js';
+import { createAssistant } from './assistant/index.js';
 import { DemoFaceVerifier } from './face.js';
 
 const DEFAULTS = {
@@ -34,6 +35,10 @@ const DEFAULTS = {
   corsOrigins: null,
   /** Необязательно: { key, cert } включает HTTPS. */
   tls: null,
+  /** Сообщений помощнику в минуту на один сеанс. */
+  assistantPerMin: 20,
+  /** Необязательная локальная модель для помощника (см. src/assistant/llm.js). */
+  assistantLlm: null,
   /** Добавить демо-пользователей в пустую базу (в боевой базе должно быть false). */
   seedDemoUsers: true,
 };
@@ -93,6 +98,23 @@ export async function createApp(options = {}) {
   }
 
   const hits = new Map(); // ip -> { count, resetAt }
+  const assistantHits = new Map(); // токен сеанса -> { count, resetAt }
+  let llmInFlight = 0;
+  // Модель отвечает медленно: одновременно не больше двух вопросов, остальным отвечают правила.
+  const llm = cfg.assistantLlm
+    ? {
+        async ask(args) {
+          if (llmInFlight >= 2) throw new Error('llm busy');
+          llmInFlight++;
+          try {
+            return await cfg.assistantLlm.ask(args);
+          } finally {
+            llmInFlight--;
+          }
+        },
+      }
+    : null;
+  const assistant = createAssistant({ llm });
   let faceInFlight = 0; // сколько проверок лица сейчас в работе или в очереди на этом сервере
 
   // ---------- вспомогательное ----------
@@ -657,6 +679,27 @@ export async function createApp(options = {}) {
         const result = await placeOrder(session, body);
         return send(res, result.replay ? 200 : 201, result);
       }
+      if (m === 'POST' && p === '/api/assistant') {
+        const body = await readJson(req, 4096);
+        const message = typeof body.message === 'string' ? body.message.trim() : '';
+        if (message.length < 1 || message.length > 300) throw new HttpError(400, 'invalid_input');
+        const now = Date.now();
+        let h = assistantHits.get(session.token);
+        if (!h || h.resetAt <= now) {
+          h = { count: 0, resetAt: now + 60_000 };
+          assistantHits.set(session.token, h);
+        }
+        if (++h.count > cfg.assistantPerMin) throw new HttpError(429, 'too_many_requests');
+        const [products, orders] = await Promise.all([repo.listProducts(), repo.listUserOrders(session.iin, 5)]);
+        const result = await assistant.answer({
+          lang: body.lang === 'kk' ? 'kk' : 'ru',
+          message,
+          products,
+          user: { name: session.user.name, balance: session.user.balance },
+          orders,
+        });
+        return send(res, 200, result);
+      }
       if (m === 'POST' && p === '/api/logout') {
         await repo.deleteSession(session.token);
         audit('logout', session.iin);
@@ -688,6 +731,7 @@ export async function createApp(options = {}) {
   const gc = setInterval(() => {
     const t = Date.now();
     for (const [k, v] of hits) if (v.resetAt <= t) hits.delete(k);
+    for (const [k, v] of assistantHits) if (v.resetAt <= t) assistantHits.delete(k);
     repo.gc().catch((e) => console.error('Очистка сеансов:', e?.message ?? e));
   }, 60_000);
   gc.unref();

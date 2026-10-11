@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { createApp } from './src/app.js';
 import { DemoFaceVerifier } from './src/face.js';
 import { RealFaceVerifier } from './src/face-real.js';
+import { createOllama } from './src/assistant/llm.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const dataDir = process.env.DATA_DIR ?? path.join(here, 'data');
@@ -78,9 +79,14 @@ const databaseUrl = process.env.DATABASE_URL || undefined;
 // Демо-пользователи с известными ПИН нужны только для разработки: с настоящей базой их не создаём.
 const seedDemoUsers = process.env.SEED_DEMO_USERS === '1' || (!databaseUrl && process.env.SEED_DEMO_USERS !== '0');
 
+// Помощник магазина работает по правилам и без нейросети. OLLAMA_MODEL (например qwen2.5:1.5b)
+// подключает локальную модель для вопросов, которые правила не поняли.
+const assistantLlm = createOllama({ url: process.env.OLLAMA_URL || undefined, model: process.env.OLLAMA_MODEL });
+
 let app;
 try {
   app = await createApp({
+  assistantLlm,
   databaseUrl,
   dataDir,
   seedDemoUsers,
@@ -147,6 +153,7 @@ app.server.listen(PORT, HOST, async () => {
   if (!tls) console.log('  ВНИМАНИЕ: HTTPS выключен (TLS_CERT/TLS_KEY). Для боя обязателен.');
   if (!corsOrigins) console.log('  ВНИМАНИЕ: CORS открыт для всех (CORS_ORIGINS не задан). Для боя ограничьте.');
   console.log(`  Панель дежурного: ${tls ? 'https' : 'http'}://${HOST}:${PORT}/panel`);
+  console.log(`  Помощник: по правилам${assistantLlm ? ` + локальная модель ${assistantLlm.model}` : ' (без нейросети; OLLAMA_MODEL включает модель)'}`);
   console.log('  ВНИМАНИЕ: защиты от подделки лица (фото, экран) нет, см. README.');
   if (!face.isDemo) {
     const n = (await app.repo.listEnrolled()).filter((u) => u.templates > 0).length;

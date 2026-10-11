@@ -1,69 +1,13 @@
 import 'dart:typed_data';
 
-import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:soldiermart/models/assistant.dart';
 import 'package:soldiermart/models/product.dart';
 import 'package:soldiermart/services/api_client.dart';
 import 'package:soldiermart/services/face_verifier.dart';
 import 'package:soldiermart/state/app_state.dart';
 
-const _water = Product(
-  id: 'f1',
-  nameRu: 'Вода',
-  nameKk: 'Су',
-  category: Category.food,
-  price: 200,
-  icon: Icons.water_drop,
-  stock: 5,
-);
-
-/// Подмена сервера: ответы задаются в тесте.
-class FakeBackend implements Backend {
-  LoginResponse loginResult = const LoginResponse(LoginStatus.ok, pendingToken: 'p');
-  FaceResponse faceResult = const FaceResponse(
-    FaceResult.match,
-    soldier: Soldier(name: 'Тест', unit: 'В/Ч 1'),
-    balance: 1000,
-    favorites: {'f1'},
-  );
-  OrderResponse orderResult = const OrderResponse(code: '123456', balance: 800);
-  Object? catalogError;
-  final requestIds = <String>[];
-  var logoutCalls = 0;
-
-  @override
-  Future<LoginResponse> login(String iin, String pin) async => loginResult;
-
-  @override
-  Future<FaceResponse> verifyFace(String t, Uint8List image) async => faceResult;
-
-  @override
-  Future<List<Product>> catalog() async {
-    if (catalogError != null) throw catalogError!;
-    return [_water];
-  }
-
-  @override
-  Future<void> setFavorite(String id, bool v) async {}
-
-  @override
-  Future<OrderResponse> placeOrder(List<CartLine> lines, String requestId) async {
-    requestIds.add(requestId);
-    return orderResult;
-  }
-
-  List<OrderRecord> ordersResult = const [];
-  Object? ordersError;
-
-  @override
-  Future<List<OrderRecord>> orders() async {
-    if (ordersError != null) throw ordersError!;
-    return ordersResult;
-  }
-
-  @override
-  Future<void> logout() async => logoutCalls++;
-}
+import 'support/fake_backend.dart';
 
 Future<AppState> _loggedIn(FakeBackend b) async {
   final app = AppState(backend: b);
@@ -103,7 +47,7 @@ void main() {
     expect(app.loggedIn, isTrue);
     expect(app.hasPending, isFalse);
     expect(app.balance, 1000);
-    expect(app.isFavorite(_water), isTrue);
+    expect(app.isFavorite(kWater), isTrue);
     expect(app.catalog.length, 1);
   });
 
@@ -132,7 +76,7 @@ void main() {
 
   test('заказ: успех очищает корзину и обновляет баланс', () async {
     final app = await _loggedIn(FakeBackend());
-    app.add(_water);
+    app.add(kWater);
     final r = await app.placeOrder();
     expect(r.ok, isTrue);
     expect(app.cartCount, 0);
@@ -143,7 +87,7 @@ void main() {
     final b = FakeBackend()
       ..orderResult = const OrderResponse(failure: OrderFailure.insufficientFunds);
     final app = await _loggedIn(b);
-    app.add(_water);
+    app.add(kWater);
     final r = await app.placeOrder();
     expect(r.ok, isFalse);
     expect(app.cartCount, 1);
@@ -153,12 +97,12 @@ void main() {
   test('requestId стабилен при повторе и меняется после правки корзины', () async {
     final b = FakeBackend()..orderResult = const OrderResponse(failure: OrderFailure.network);
     final app = await _loggedIn(b);
-    app.add(_water);
+    app.add(kWater);
     await app.placeOrder();
     await app.placeOrder();
     expect(b.requestIds[0], b.requestIds[1]);
 
-    app.add(_water);
+    app.add(kWater);
     await app.placeOrder();
     expect(b.requestIds[2], isNot(b.requestIds[0]));
   });
@@ -167,7 +111,7 @@ void main() {
     final b = FakeBackend()
       ..orderResult = const OrderResponse(failure: OrderFailure.sessionExpired);
     final app = await _loggedIn(b);
-    app.add(_water);
+    app.add(kWater);
     await app.placeOrder();
     expect(app.loggedIn, isFalse);
     expect(app.loginNotice, 'sessionExpired');
@@ -176,7 +120,7 @@ void main() {
   test('выход очищает данные и закрывает сеанс на сервере', () async {
     final b = FakeBackend();
     final app = await _loggedIn(b);
-    app.add(_water);
+    app.add(kWater);
     app.logout();
     expect(app.loggedIn, isFalse);
     expect(app.cartCount, 0);
@@ -239,4 +183,76 @@ void main() {
     expect(OrderRecord.fromJson({...{'id': 'y', 'code': '1', 'total': 1, 'createdAt': 'bad', 'items': []}, 'status': 'zzz'}).status,
         OrderStatus.ready);
   });
+
+  test('помощник: вопрос уходит с языком, ответ попадает в чат, выход очищает переписку', () async {
+    final b = FakeBackend()
+      ..assistantResult = const AssistantReply(
+        reply: 'Нашёл:',
+        suggestions: ['Баланс'],
+        products: [AssistantItem(id: 'f1', name: 'Вода', price: 200, qty: 1, stock: 5)],
+      );
+    final app = await _loggedIn(b);
+    app.setLang('kk');
+    await app.askAssistant('  су керек ');
+    expect(b.assistantQuestions, ['kk:су керек']);
+    expect(app.chat.length, 2);
+    expect(app.chat.first.fromUser, isTrue);
+    expect(app.chat.last.products.single.id, 'f1');
+    expect(app.assistantBusy, isFalse);
+
+    await app.askAssistant('   '); // пустой вопрос не отправляется
+    expect(b.assistantQuestions.length, 1);
+
+    app.logout();
+    expect(app.chat, isEmpty); // следующий человек не увидит чужие вопросы
+  });
+
+  test('помощник: «добавить всё» кладёт в корзину не больше остатка и сбрасывает requestId', () async {
+    final b = FakeBackend();
+    final app = await _loggedIn(b); // в каталоге вода f1, остаток 5
+    final added = app.addAssistantItems(const [
+      AssistantItem(id: 'f1', name: '', price: 0, qty: 3, stock: 0),
+      AssistantItem(id: 'нет-такого', name: '', price: 0, qty: 2, stock: 0),
+    ]);
+    expect(added, 3);
+    expect(app.cartCount, 3);
+    final again = app.addAssistantItems(const [AssistantItem(id: 'f1', name: '', price: 0, qty: 10, stock: 0)]);
+    expect(again, 2, reason: 'всего не больше остатка 5');
+    expect(app.cartCount, 5);
+    expect(app.addAssistantItems(const [AssistantItem(id: 'f1', name: '', price: 0, qty: 1, stock: 0)]), 0);
+  });
+
+  test('помощник: ошибки не роняют чат; истёкший сеанс возвращает на вход', () async {
+    final b = FakeBackend()..assistantError = ApiException(null);
+    final app = await _loggedIn(b);
+    await app.askAssistant('привет');
+    expect(app.chat.last.text, app.s.t('assistantError'));
+    expect(app.assistantBusy, isFalse);
+
+    b.assistantError = ApiException(429);
+    await app.askAssistant('ещё');
+    expect(app.chat.last.text, app.s.t('assistantSlow'));
+
+    b.assistantError = ApiException(401);
+    await app.askAssistant('и ещё');
+    expect(app.loggedIn, isFalse);
+    expect(app.loginNotice, 'sessionExpired');
+  });
+
+  test('ответ помощника разбирается, готовый набор распознаётся', () {
+    final r = AssistantReply.fromJson({
+      'reply': 'Подобрал',
+      'suggestions': ['Баланс'],
+      'products': [
+        {'id': 'f1', 'name': 'Печенье', 'price': 650, 'qty': 2, 'stock': 9},
+      ],
+      'cart': [
+        {'productId': 'f1', 'qty': 2},
+      ],
+    });
+    expect(r.products.single.qty, 2);
+    expect(r.cart!.single.id, 'f1');
+    expect(AssistantReply.fromJson({'reply': 'x', 'cart': null}).cart, isNull);
+  });
+
 }

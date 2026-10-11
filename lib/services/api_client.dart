@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
+import '../models/assistant.dart';
 import '../models/product.dart';
 import 'face_verifier.dart';
 
@@ -106,6 +107,7 @@ abstract class Backend {
   Future<void> setFavorite(String productId, bool value);
   Future<OrderResponse> placeOrder(List<CartLine> lines, String requestId);
   Future<List<OrderRecord>> orders();
+  Future<AssistantReply> assistant(String message, String lang);
   Future<void> logout();
 }
 
@@ -296,6 +298,13 @@ class ApiClient implements Backend {
     if (r.statusCode != 200) throw ApiException(r.statusCode);
     final list = (_json(r)['orders'] as List).cast<Map<String, dynamic>>();
     return list.map(OrderRecord.fromJson).toList();
+  }
+
+  @override
+  Future<AssistantReply> assistant(String message, String lang) async {
+    final r = await _send('POST', '/api/assistant', auth: true, body: {'message': message, 'lang': lang});
+    if (r.statusCode != 200) throw ApiException(r.statusCode);
+    return AssistantReply.fromJson(_json(r));
   }
 
   @override

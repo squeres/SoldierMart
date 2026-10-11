@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 
 import '../l10n/strings.dart';
+import '../models/assistant.dart';
 import '../models/product.dart';
 import '../services/api_client.dart';
 import '../services/face_verifier.dart';
@@ -131,6 +132,8 @@ class AppState extends ChangeNotifier {
     orders = const [];
     ordersLoading = false;
     ordersFailed = false;
+    chat.clear();
+    assistantBusy = false;
     if (wasLoggedIn) unawaited(_api.logout());
     notifyListeners();
   }
@@ -142,6 +145,7 @@ class AppState extends ChangeNotifier {
   }
 
   /// Вызывается при любом касании экрана.
+  ///
   void touch() {
     _idle?.cancel();
     if (!loggedIn && !hasPending) return;
@@ -253,6 +257,65 @@ class AppState extends ChangeNotifier {
       ordersLoading = false;
       notifyListeners();
     }
+  }
+
+  // ---------- помощник ----------
+
+  /// Переписка с помощником. Очищается при выходе, чужие вопросы следующий человек не увидит.
+  final List<ChatMessage> chat = [];
+  bool assistantBusy = false;
+
+  /// Вопрос помощнику. Отвечает сервер (по правилам, при желании с локальной моделью).
+  Future<void> askAssistant(String text) async {
+    final q = text.trim();
+    if (q.isEmpty || assistantBusy || !loggedIn) return;
+    chat.add(ChatMessage.user(q));
+    assistantBusy = true;
+    notifyListeners();
+
+    ChatMessage reply;
+    try {
+      final r = await _api.assistant(q, lang);
+      reply = ChatMessage.bot(r.reply,
+          products: r.products, cart: r.cart, suggestions: r.suggestions);
+    } on ApiException catch (e) {
+      if (e.unauthorized) {
+        _sessionExpired();
+        return;
+      }
+      reply = ChatMessage.bot(s.t(e.status == 429 ? 'assistantSlow' : 'assistantError'));
+    } catch (_) {
+      reply = ChatMessage.bot(s.t('assistantError'));
+    }
+    if (!loggedIn) return; // вышли, пока ждали ответ
+    chat.add(reply);
+    assistantBusy = false;
+    notifyListeners();
+  }
+
+  /// Кладёт предложенные помощником товары в корзину (не больше остатка).
+  /// Возвращает, сколько штук добавлено. Оформляет заказ человек сам в корзине.
+  int addAssistantItems(List<AssistantItem> items) {
+    var added = 0;
+    for (final it in items) {
+      final matches = catalog.where((p) => p.id == it.id);
+      if (matches.isEmpty) continue;
+      final p = matches.first;
+      for (var i = 0; i < it.qty && qtyOf(p) < stockOf(p); i++) {
+        final line = _cart[p.id];
+        if (line == null) {
+          _cart[p.id] = CartLine(p, 1);
+        } else {
+          line.qty++;
+        }
+        added++;
+      }
+    }
+    if (added > 0) {
+      _orderRequestId = null;
+      notifyListeners();
+    }
+    return added;
   }
 
   // ---------- избранное ----------

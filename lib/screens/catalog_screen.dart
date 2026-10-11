@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../models/product.dart';
 import '../state/app_state.dart';
 import '../theme/app_theme.dart';
+import 'assistant_screen.dart';
 import 'cart_screen.dart';
 import 'orders_screen.dart';
 
@@ -46,6 +47,14 @@ class CatalogScreen extends StatelessWidget {
           ],
         ),
         actions: [
+          IconButton(
+            iconSize: 30,
+            tooltip: s.t('assistant'),
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const AssistantScreen()),
+            ),
+            icon: const Icon(Icons.support_agent),
+          ),
           IconButton(
             iconSize: 30,
             tooltip: s.t('history'),
