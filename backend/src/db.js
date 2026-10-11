@@ -109,8 +109,20 @@ export async function openDb({ databaseUrl, dataDir, poolSize = 10 } = {}) {
       fs.mkdirSync(dataDir, { recursive: true });
       target = path.join(dataDir, 'pgdata');
     }
-    db = new LiteDb(new PGlite(target));
-    await db.pg.waitReady;
+    try {
+      db = new LiteDb(new PGlite(target));
+      await db.pg.waitReady;
+    } catch (e) {
+      if (!target) throw e;
+      // Встроенная база не переносит принудительную остановку процесса (kill, закрытие окна):
+      // файлы остаются в промежуточном состоянии и при следующем запуске она аварийно завершается.
+      throw new Error(
+        `Встроенная база не открылась (${String(e?.message ?? e).split('.')[0]}). Обычно это бывает после принудительной остановки сервера, ` +
+          `когда папка базы осталась повреждённой: ${target}\n` +
+          'Чтобы начать с чистой базы, выполните: npm run db:reset (папку базы переименует, а не удалит). ' +
+          'Сервер останавливайте сочетанием Ctrl+C. Для настоящей работы используйте PostgreSQL (DATABASE_URL).',
+      );
+    }
   }
   await migrate(db);
   return db;

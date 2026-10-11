@@ -78,7 +78,9 @@ const databaseUrl = process.env.DATABASE_URL || undefined;
 // Демо-пользователи с известными ПИН нужны только для разработки: с настоящей базой их не создаём.
 const seedDemoUsers = process.env.SEED_DEMO_USERS === '1' || (!databaseUrl && process.env.SEED_DEMO_USERS !== '0');
 
-const app = await createApp({
+let app;
+try {
+  app = await createApp({
   databaseUrl,
   dataDir,
   seedDemoUsers,
@@ -90,7 +92,11 @@ const app = await createApp({
   corsOrigins,
   trustProxy: process.env.TRUST_PROXY === '1',
   ...(process.env.RATE_LIMIT_PER_MIN ? { rateLimitPerMin: Number(process.env.RATE_LIMIT_PER_MIN) } : {}),
-});
+  });
+} catch (e) {
+  console.error('Сервер не запущен:', e?.message ?? e);
+  process.exit(1);
+}
 
 // Только для разработки без камеры: `npm run dev` создаёт тестовый аккаунт с «зарегистрированным» лицом.
 // Работает лишь при FACE_MODE=demo, где лицо и так не проверяется. В бою не включается.
@@ -158,7 +164,8 @@ app.server.listen(PORT, HOST, async () => {
   }
 });
 
-for (const sig of ['SIGINT', 'SIGTERM']) {
+// SIGBREAK и SIGHUP приходят в Windows при закрытии окна консоли: тоже закрываем базу аккуратно.
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGBREAK', 'SIGHUP']) {
   process.on(sig, async () => {
     await app.close();
     process.exit(0);
