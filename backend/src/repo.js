@@ -68,9 +68,110 @@ export function createRepo(db, { secretKey = null } = {}) {
     stock: r.stock,
   });
 
+  /** Каталог для приложения: только видимые товары. */
   async function listProducts() {
-    const { rows } = await db.query('SELECT * FROM products ORDER BY pos');
+    const { rows } = await db.query('SELECT * FROM products WHERE active ORDER BY pos');
     return rows.map(mapProduct);
+  }
+
+  /** Все товары для дежурного (и скрытые), с числом проданных штук. */
+  async function listAllProducts() {
+    const { rows } = await db.query(
+      `SELECT p.*, coalesce(s.sold, 0)::int AS sold
+         FROM products p
+         LEFT JOIN (
+           SELECT oi.product_id, sum(oi.qty) AS sold
+             FROM order_items oi JOIN orders o ON o.id = oi.order_id
+            WHERE o.status <> 'cancelled' GROUP BY oi.product_id
+         ) s ON s.product_id = p.id
+        ORDER BY p.pos`,
+    );
+    return rows.map((r) => ({ ...mapProduct(r), active: r.active, sold: r.sold, updatedAt: iso(r.updated_at) }));
+  }
+
+  const PRODUCT_COLUMNS = {
+    nameRu: 'name_ru',
+    nameKk: 'name_kk',
+    category: 'category',
+    price: 'price',
+    icon: 'icon',
+    stock: 'stock',
+    active: 'active',
+  };
+
+  const fullProduct = (r) => ({ ...mapProduct(r), active: r.active, updatedAt: iso(r.updated_at) });
+
+  async function createProduct(p) {
+    const id = p.id ?? 'p' + crypto.randomBytes(4).toString('hex');
+    try {
+      const { rows } = await db.query(
+        `INSERT INTO products (id, pos, name_ru, name_kk, category, price, icon, stock, active)
+         VALUES ($1, (SELECT coalesce(max(pos), -1) + 1 FROM products), $2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+        [id, p.nameRu, p.nameKk, p.category, p.price, p.icon, p.stock, p.active ?? true],
+      );
+      return fullProduct(rows[0]);
+    } catch (e) {
+      if (e?.code === '23505') throw new RepoError('product_exists');
+      throw e;
+    }
+  }
+
+  /** Меняет только переданные поля (список полей фиксирован, имена колонок не берутся из запроса). */
+  async function updateProduct(id, patch) {
+    const sets = [];
+    const vals = [id];
+    for (const [k, col] of Object.entries(PRODUCT_COLUMNS)) {
+      if (patch[k] === undefined) continue;
+      vals.push(patch[k]);
+      sets.push(`${col} = $${vals.length}`);
+    }
+    if (!sets.length) throw new RepoError('nothing_to_update');
+    let rows;
+    try {
+      ({ rows } = await db.query(
+        `UPDATE products SET ${sets.join(', ')}, updated_at = now() WHERE id = $1 RETURNING *`,
+        vals,
+      ));
+    } catch (e) {
+      if (e?.code === '23514') throw new RepoError('invalid_value'); // нарушено ограничение базы
+      throw e;
+    }
+    if (!rows.length) throw new RepoError('unknown_product');
+    return fullProduct(rows[0]);
+  }
+
+  /** Приход или списание остатка одним атомарным запросом; в минус уйти нельзя. */
+  async function adjustStock(id, delta) {
+    try {
+      const { rows } = await db.query(
+        'UPDATE products SET stock = stock + $2, updated_at = now() WHERE id = $1 RETURNING *',
+        [id, delta],
+      );
+      if (!rows.length) throw new RepoError('unknown_product');
+      return fullProduct(rows[0]);
+    } catch (e) {
+      if (e?.code === '23514') throw new RepoError('insufficient_stock');
+      throw e;
+    }
+  }
+
+  /**
+   * Удаление насовсем. Заказы остаются (название и цена скопированы в строки заказа),
+   * из избранного товар пропадает. Если товар есть в заказах, ожидающих выдачи, удалять нельзя:
+   * его можно только скрыть.
+   */
+  async function deleteProduct(id) {
+    return db.tx(async (t) => {
+      const cur = await t.query('SELECT id FROM products WHERE id = $1 FOR UPDATE', [id]);
+      if (!cur.rows.length) throw new RepoError('unknown_product');
+      const busy = await t.query(
+        `SELECT 1 FROM order_items oi JOIN orders o ON o.id = oi.order_id
+          WHERE oi.product_id = $1 AND o.status = 'ready' LIMIT 1`,
+        [id],
+      );
+      if (busy.rows.length) throw new RepoError('product_in_active_orders');
+      await t.query('DELETE FROM products WHERE id = $1', [id]);
+    });
   }
 
   async function insertProducts(x, products) {
@@ -91,14 +192,14 @@ export function createRepo(db, { secretKey = null } = {}) {
   async function listFavorites(iin) {
     const { rows } = await db.query(
       `SELECT f.product_id FROM favorites f JOIN products p ON p.id = f.product_id
-        WHERE f.iin = $1 ORDER BY p.pos`,
+        WHERE f.iin = $1 AND p.active ORDER BY p.pos`,
       [iin],
     );
     return rows.map((r) => r.product_id);
   }
 
   async function setFavorite(iin, productId, value) {
-    const { rows } = await db.query('SELECT 1 FROM products WHERE id = $1', [productId]);
+    const { rows } = await db.query('SELECT 1 FROM products WHERE id = $1 AND active', [productId]);
     if (!rows.length) throw new RepoError('unknown_product');
     if (value) {
       await db.query(
@@ -448,7 +549,7 @@ export function createRepo(db, { secretKey = null } = {}) {
           const lines = [];
           for (const [productId, qty] of merged) {
             const p = byId.get(productId);
-            if (!p) throw new RepoError('unknown_product', { productId });
+            if (!p || !p.active) throw new RepoError('unknown_product', { productId });
             if (p.stock < qty) throw new RepoError('out_of_stock', { productId, available: p.stock });
             total += p.price * qty;
             lines.push({ p, qty });
@@ -574,7 +675,7 @@ export function createRepo(db, { secretKey = null } = {}) {
 
   return {
     getUser, createUser, searchUsers,
-    listProducts, insertProducts, countProducts, listFavorites, setFavorite,
+    listProducts, listAllProducts, createProduct, updateProduct, adjustStock, deleteProduct, insertProducts, countProducts, listFavorites, setFavorite,
     getSecurity, registerPinFail, resetPinFails, registerFaceFail, resetOnLogin, unlock, listLocked,
     createPending, claimPending, releasePending, dropPending, completeLogin, touchSession, deleteSession, gc,
     listTemplates, addTemplate, deleteTemplates, listEnrolled, reconcileEncryption,

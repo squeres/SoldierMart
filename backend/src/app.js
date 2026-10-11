@@ -8,6 +8,7 @@ import { openDb } from './db.js';
 import { createRepo, RepoError } from './repo.js';
 import { seedDatabase } from './seed.js';
 import { toKey } from './secret.js';
+import { CATEGORIES, ICONS } from './catalog-meta.js';
 import { DemoFaceVerifier } from './face.js';
 
 const DEFAULTS = {
@@ -61,6 +62,11 @@ const REPO_STATUS = {
   out_of_stock: 409,
   insufficient_funds: 409,
   try_again: 503,
+  product_exists: 409,
+  insufficient_stock: 409,
+  product_in_active_orders: 409,
+  invalid_value: 400,
+  nothing_to_update: 400,
 };
 
 const sha256 = (s) => crypto.createHash('sha256').update(String(s)).digest();
@@ -209,14 +215,58 @@ export async function createApp(options = {}) {
   });
   const adminOrder = (o) => ({ ...publicOrder(o), iin: maskIin(o.iin), name: o.userName });
 
-  /** Ошибки слоя данных -> HTTP. */
-  async function guard(fn) {
+  /** Ошибки слоя данных -> HTTP. `overrides` меняет статус для отдельных кодов. */
+  async function guard(fn, overrides = {}) {
     try {
       return await fn();
     } catch (e) {
-      if (e instanceof RepoError) throw new HttpError(REPO_STATUS[e.code] ?? 500, e.code, e.extra);
+      if (e instanceof RepoError) {
+        throw new HttpError(overrides[e.code] ?? REPO_STATUS[e.code] ?? 500, e.code, e.extra);
+      }
       throw e;
     }
+  }
+
+  // ---------- товары (для дежурного) ----------
+
+  const INT_FIELDS = { price: [0, 10_000_000], stock: [0, 1_000_000] };
+
+  /** Проверка полей товара. Лишние поля отбрасываются; при ошибке — 400 с названием поля. */
+  function parseProduct(body, { create }) {
+    const out = {};
+    const bad = (field) => new HttpError(400, 'invalid_product', { field });
+    const name = (v, field) => {
+      const t = typeof v === 'string' ? v.trim() : '';
+      if (t.length < 1 || t.length > 120) throw bad(field);
+      return t;
+    };
+    if (body.nameRu !== undefined || create) out.nameRu = name(body.nameRu, 'nameRu');
+    if (body.nameKk !== undefined) out.nameKk = name(body.nameKk, 'nameKk');
+    if (create && out.nameKk === undefined) out.nameKk = out.nameRu; // нет казахского названия — берём русское
+    if (body.category !== undefined || create) {
+      if (!CATEGORIES.some((c) => c.id === body.category)) throw bad('category');
+      out.category = body.category;
+    }
+    if (body.icon !== undefined || create) {
+      const icon = body.icon ?? 'shopping_bag';
+      if (!ICONS.includes(icon)) throw bad('icon');
+      out.icon = icon;
+    }
+    for (const [k, [lo, hi]] of Object.entries(INT_FIELDS)) {
+      if (body[k] === undefined && !create) continue;
+      const v = body[k] ?? (k === 'stock' ? 0 : undefined);
+      if (!Number.isInteger(v) || v < lo || v > hi) throw bad(k);
+      out[k] = v;
+    }
+    if (body.active !== undefined) {
+      if (typeof body.active !== 'boolean') throw bad('active');
+      out.active = body.active;
+    }
+    if (create && body.id !== undefined) {
+      if (typeof body.id !== 'string' || !/^[A-Za-z0-9_-]{1,32}$/.test(body.id)) throw bad('id');
+      out.id = body.id;
+    }
+    return out;
   }
 
   // ---------- вход ----------
@@ -410,6 +460,7 @@ export async function createApp(options = {}) {
 
   const enrollPage = fs.readFileSync(new URL('../public/enroll.html', import.meta.url));
   const panelPage = fs.readFileSync(new URL('../public/admin.html', import.meta.url));
+  const catalogPage = fs.readFileSync(new URL('../public/catalog.html', import.meta.url));
   const ORDER_STATUSES = new Set(['ready', 'picked_up', 'cancelled', 'all']);
 
   async function route(req, res) {
@@ -438,8 +489,8 @@ export async function createApp(options = {}) {
       });
       return res.end(enrollPage);
     }
-    if (m === 'GET' && p === '/panel') {
-      // Панель дежурного. Страница сама по себе без секретов, все данные идут запросами /admin/* с ключом.
+    if (m === 'GET' && (p === '/panel' || p === '/panel/catalog')) {
+      // Панели дежурного. Страницы сами по себе без секретов, все данные идут запросами /admin/* с ключом.
       res.writeHead(200, {
         'Content-Type': 'text/html; charset=utf-8',
         'Cache-Control': 'no-store',
@@ -448,7 +499,7 @@ export async function createApp(options = {}) {
         'Content-Security-Policy':
           "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
       });
-      return res.end(panelPage);
+      return res.end(p === '/panel' ? panelPage : catalogPage);
     }
 
     if (m === 'POST' && p === '/api/login') return login(req, res);
@@ -492,6 +543,41 @@ export async function createApp(options = {}) {
         if (iin) audit('admin_view_orders', iin); // кто смотрел чужую историю, остаётся в журнале
         const list = await repo.listOrders({ status, iin });
         return send(res, 200, { orders: list.map(adminOrder) });
+      }
+      if (m === 'GET' && p === '/admin/products') {
+        return send(res, 200, { products: await repo.listAllProducts(), categories: CATEGORIES, icons: ICONS });
+      }
+      if (m === 'POST' && p === '/admin/products') {
+        const input = parseProduct(await readJson(req, 8192), { create: true });
+        const product = await guard(() => repo.createProduct({ ...input, active: input.active ?? true }));
+        audit('product_created', null, { id: product.id });
+        return send(res, 201, { product });
+      }
+      const prod = /^\/admin\/products\/([A-Za-z0-9_-]{1,32})(\/stock)?$/.exec(p);
+      if (prod) {
+        const id = prod[1];
+        const notFound = { unknown_product: 404 };
+        if (prod[2] && m === 'POST') {
+          // Приход (+) или списание (−) остатка.
+          const { delta } = await readJson(req, 4096);
+          if (!Number.isInteger(delta) || delta === 0 || Math.abs(delta) > 1_000_000) {
+            throw new HttpError(400, 'invalid_product', { field: 'delta' });
+          }
+          const product = await guard(() => repo.adjustStock(id, delta), notFound);
+          audit('product_stock', null, { id, delta });
+          return send(res, 200, { product });
+        }
+        if (!prod[2] && m === 'PUT') {
+          const patch = parseProduct(await readJson(req, 8192), { create: false });
+          const product = await guard(() => repo.updateProduct(id, patch), notFound);
+          audit('product_updated', null, { id, fields: Object.keys(patch) });
+          return send(res, 200, { product });
+        }
+        if (!prod[2] && m === 'DELETE') {
+          await guard(() => repo.deleteProduct(id), notFound);
+          audit('product_deleted', null, { id });
+          return send(res, 200, { ok: true });
+        }
       }
       if (m === 'GET' && p === '/admin/users') {
         // Поиск человека по части имени или ИИН (для просмотра истории и пополнения).

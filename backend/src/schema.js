@@ -117,4 +117,12 @@ CREATE INDEX sessions_expires_ix ON sessions (expires_at);
 CREATE INDEX pending_expires_ix ON pending_logins (expires_at);
 `,
   },
+  {
+    version: 2,
+    sql: `
+-- Скрытый товар не виден в приложении и не продаётся, но остаётся в базе (история заказов, возврат).
+ALTER TABLE products ADD COLUMN active boolean NOT NULL DEFAULT true;
+ALTER TABLE products ADD COLUMN updated_at timestamptz NOT NULL DEFAULT now();
+`,
+  },
 ];

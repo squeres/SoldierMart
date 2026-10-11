@@ -235,3 +235,149 @@ test('перенос без ключа для зашифрованных шаб�
   assert.match(r.stderr, /ключа нет/);
   assert.equal(fs.existsSync(path.join(dir, 'pgdata')), false, 'база даже не создавалась');
 });
+
+// ---------- управление товарами ----------
+
+const adminCall = (base, method, url, body) => call(base, method, url, { admin: ADMIN, body });
+const NEW = { nameRu: 'Фонарик', category: 'stationery', icon: 'flashlight_on', price: 2500, stock: 5 };
+
+test('дежурный добавляет товар: он виден в приложении, продаётся и считается в остатках', async () => {
+  const { app, base } = await start();
+  const created = await adminCall(base, 'POST', '/admin/products', NEW);
+  assert.equal(created.status, 201);
+  const p = created.json.product;
+  assert.equal(p.nameKk, 'Фонарик', 'без казахского названия берётся русское');
+  assert.equal(p.active, true);
+  assert.match(p.id, /^p[0-9a-f]{8}$/);
+
+  const token = await fullLogin(base);
+  const cat = await call(base, 'GET', '/api/catalog', { token });
+  assert.ok(cat.json.products.some((x) => x.id === p.id && x.price === 2500));
+  assert.equal(cat.json.products.at(-1).id, p.id, 'новый товар в конце каталога');
+
+  const o = await call(base, 'POST', '/api/orders', { token, body: { items: [{ productId: p.id, qty: 5 }] } });
+  assert.equal(o.status, 201);
+  assert.equal((await call(base, 'POST', '/api/orders', { token, body: { items: [{ productId: p.id, qty: 1 }] } })).status, 409);
+  assert.equal((await app.db.query('SELECT stock FROM products WHERE id = $1', [p.id])).rows[0].stock, 0);
+  const list = await adminCall(base, 'GET', '/admin/products');
+  assert.equal(list.json.products.find((x) => x.id === p.id).sold, 5);
+  assert.ok(list.json.categories.length >= 4 && list.json.icons.includes('flashlight_on'));
+});
+
+test('проверка полей товара: плохие значения отклоняются с названием поля', async () => {
+  const { base } = await start();
+  const bad = async (patch, field) => {
+    const r = await adminCall(base, 'POST', '/admin/products', { ...NEW, ...patch });
+    assert.equal(r.status, 400, JSON.stringify(patch));
+    assert.equal(r.json.field, field);
+  };
+  await bad({ nameRu: '   ' }, 'nameRu');
+  await bad({ nameRu: 'x'.repeat(121) }, 'nameRu');
+  await bad({ category: 'weapons' }, 'category');
+  await bad({ icon: 'DROP TABLE' }, 'icon');
+  await bad({ price: -1 }, 'price');
+  await bad({ price: 10.5 }, 'price');
+  await bad({ price: '100' }, 'price');
+  await bad({ stock: -3 }, 'stock');
+  await bad({ id: 'плохой код!' }, 'id');
+  assert.equal((await adminCall(base, 'POST', '/admin/products', { ...NEW, id: 'f1' })).status, 409, 'код уже занят');
+  assert.equal((await call(base, 'POST', '/admin/products', { body: NEW })).status, 403, 'без ключа нельзя');
+});
+
+test('изменение товара: цена и название меняются, старые заказы сохраняют прежнюю цену', async () => {
+  const { base } = await start();
+  const token = await fullLogin(base);
+  const o = await call(base, 'POST', '/api/orders', { token, body: { items: [{ productId: 'f1', qty: 1 }] } });
+  assert.equal(o.status, 201);
+  const r = await adminCall(base, 'PUT', '/admin/products/f1', { price: 999, nameRu: 'Печенье новое' });
+  assert.equal(r.status, 200);
+  assert.equal(r.json.product.price, 999);
+  assert.equal((await adminCall(base, 'PUT', '/admin/products/f1', {})).status, 400, 'пустое изменение');
+  assert.equal((await adminCall(base, 'PUT', '/admin/products/nope', { price: 1 })).status, 404);
+  assert.equal((await adminCall(base, 'PUT', '/admin/products/f1', { category: 'x' })).status, 400);
+
+  const mine = (await call(base, 'GET', '/api/orders', { token })).json.orders;
+  assert.equal(mine[0].items[0].price, 650);
+  assert.equal(mine[0].items[0].nameRu, 'Печенье овсяное, 300 г');
+  const next = await call(base, 'POST', '/api/orders', { token, body: { items: [{ productId: 'f1', qty: 1 }] } });
+  assert.equal(next.json.order.total, 999, 'новый заказ по новой цене');
+});
+
+test('скрытый товар пропадает из приложения и избранного, не продаётся; можно вернуть', async () => {
+  const { base } = await start();
+  const token = await fullLogin(base);
+  await call(base, 'PUT', '/api/favorites/f1', { token });
+  assert.deepEqual((await call(base, 'GET', '/api/me', { token })).json.favorites, ['f1']);
+
+  assert.equal((await adminCall(base, 'PUT', '/admin/products/f1', { active: false })).json.product.active, false);
+  assert.equal((await call(base, 'GET', '/api/catalog', { token })).json.products.some((p) => p.id === 'f1'), false);
+  assert.deepEqual((await call(base, 'GET', '/api/me', { token })).json.favorites, []);
+  assert.equal((await call(base, 'POST', '/api/orders', { token, body: { items: [{ productId: 'f1', qty: 1 }] } })).status, 400);
+  assert.equal((await call(base, 'PUT', '/api/favorites/f1', { token })).status, 404);
+  assert.equal((await adminCall(base, 'GET', '/admin/products')).json.products.find((p) => p.id === 'f1').active, false, 'дежурный его видит');
+
+  await adminCall(base, 'PUT', '/admin/products/f1', { active: true });
+  assert.equal((await call(base, 'GET', '/api/catalog', { token })).json.products.some((p) => p.id === 'f1'), true);
+  assert.deepEqual((await call(base, 'GET', '/api/me', { token })).json.favorites, ['f1'], 'избранное вернулось');
+});
+
+test('приход и списание остатка атомарны, в минус уйти нельзя', async () => {
+  const { app, base } = await start();
+  const stockOf = async () => (await app.db.query("SELECT stock FROM products WHERE id = 'h6'")).rows[0].stock;
+  const s0 = await stockOf();
+  assert.equal((await adminCall(base, 'POST', '/admin/products/h6/stock', { delta: 10 })).json.product.stock, s0 + 10);
+  assert.equal((await adminCall(base, 'POST', '/admin/products/h6/stock', { delta: -(s0 + 11) })).status, 409);
+  assert.equal(await stockOf(), s0 + 10, 'отказ ничего не изменил');
+  assert.equal((await adminCall(base, 'POST', '/admin/products/h6/stock', { delta: 0 })).status, 400);
+  assert.equal((await adminCall(base, 'POST', '/admin/products/h6/stock', { delta: 1.5 })).status, 400);
+  assert.equal((await adminCall(base, 'POST', '/admin/products/nope/stock', { delta: 1 })).status, 404);
+  const rs = await Promise.all(Array.from({ length: 10 }, () => adminCall(base, 'POST', '/admin/products/h6/stock', { delta: 1 })));
+  assert.ok(rs.every((r) => r.status === 200));
+  assert.equal(await stockOf(), s0 + 20, 'параллельные приходы не теряются');
+});
+
+test('удаление: история остаётся, из избранного пропадает, товар в ожидающем заказе удалить нельзя', async () => {
+  const { app, base } = await start();
+  const token = await fullLogin(base);
+  const o = await call(base, 'POST', '/api/orders', { token, body: { items: [{ productId: 'f1', qty: 1 }] } });
+  await call(base, 'PUT', '/api/favorites/f1', { token });
+
+  const blocked = await adminCall(base, 'DELETE', '/admin/products/f1');
+  assert.equal(blocked.status, 409);
+  assert.equal(blocked.json.error, 'product_in_active_orders');
+
+  await adminCall(base, 'POST', '/admin/orders/pickup', { id: o.json.order.id });
+  assert.equal((await adminCall(base, 'DELETE', '/admin/products/f1')).status, 200);
+  assert.equal((await adminCall(base, 'DELETE', '/admin/products/f1')).status, 404);
+  assert.equal((await app.db.query("SELECT count(*)::int AS n FROM products WHERE id = 'f1'")).rows[0].n, 0);
+  assert.equal((await app.db.query("SELECT count(*)::int AS n FROM favorites WHERE product_id = 'f1'")).rows[0].n, 0);
+
+  const mine = (await call(base, 'GET', '/api/orders', { token })).json.orders;
+  assert.equal(mine[0].items[0].nameRu, 'Печенье овсяное, 300 г', 'в истории название на месте');
+});
+
+test('отмена заказа с уже удалённым товаром возвращает деньги и не падает', async () => {
+  const { app, base } = await start();
+  const token = await fullLogin(base);
+  const a = await call(base, 'POST', '/api/orders', { token, body: { items: [{ productId: 'f1', qty: 1 }, { productId: 'f8', qty: 2 }] } });
+  // товар убрали напрямую в базе, в обход защиты от удаления
+  await app.db.query("DELETE FROM products WHERE id = 'f1'");
+  const c = await adminCall(base, 'POST', '/admin/orders/cancel', { id: a.json.order.id });
+  assert.equal(c.status, 200);
+  assert.equal(c.json.balance, 25000);
+});
+
+test('миграция 2 записана в schema_version', async () => {
+  const dir = tmp('sm-mig3-');
+  const db = await openDb({ dataDir: dir });
+  assert.equal((await db.query('SELECT count(*)::int AS n FROM schema_version WHERE version = 2')).rows[0].n, 1);
+  await db.close();
+});
+
+test('страница управления товарами отдаётся с защитными заголовками', async () => {
+  const { base } = await start();
+  const r = await fetch(base + '/panel/catalog');
+  assert.equal(r.status, 200);
+  assert.ok(r.headers.get('content-security-policy').includes("frame-ancestors 'none'"));
+  assert.ok((await r.text()).includes('управление товарами'));
+});

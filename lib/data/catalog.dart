@@ -24,4 +24,15 @@ const Map<String, IconData> kIcons = {
   'edit': Icons.edit,
   'mail': Icons.mail,
   'battery_full': Icons.battery_full,
+  // Значки, которые дежурный может выбрать для новых товаров (список в backend/src/catalog-meta.js).
+  'local_drink': Icons.local_drink,
+  'fastfood': Icons.fastfood,
+  'restaurant': Icons.restaurant,
+  'cake': Icons.cake,
+  'medical_services': Icons.medical_services,
+  'flashlight_on': Icons.flashlight_on,
+  'umbrella': Icons.umbrella,
+  'inventory_2': Icons.inventory_2,
+  'shopping_bag': Icons.shopping_bag,
+  'local_cafe': Icons.local_cafe,
 };
