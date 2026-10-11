@@ -1,0 +1,3 @@
+# Скрипты Windows должны быть с переводами строк CRLF, иначе cmd.exe путается в метках.
+*.cmd text eol=crlf
+*.bat text eol=crlf
