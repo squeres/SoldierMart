@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../l10n/strings.dart';
 import '../models/product.dart';
 import '../state/app_state.dart';
+import '../theme/app_theme.dart';
 
 /// История заказов вошедшего человека. Данные приходят с сервера и привязаны к его ИИН:
 /// чужих заказов здесь быть не может.
@@ -94,8 +95,8 @@ class OrderCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     final (label, color, icon) = switch (order.status) {
-      OrderStatus.ready => (s.t('statusReady'), cs.tertiary, Icons.hourglass_top),
-      OrderStatus.pickedUp => (s.t('statusPickedUp'), Colors.green, Icons.check_circle),
+      OrderStatus.ready => (s.t('statusReady'), cs.primary, Icons.hourglass_top),
+      OrderStatus.pickedUp => (s.t('statusPickedUp'), Brand.success, Icons.check_circle),
       OrderStatus.cancelled => (s.t('statusCancelled'), cs.error, Icons.undo),
     };
 

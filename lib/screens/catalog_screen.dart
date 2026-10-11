@@ -24,11 +24,19 @@ class CatalogScreen extends StatelessWidget {
         title: Row(
           children: [
             // Логотип слева от аккаунта (фон вырезан, PNG с прозрачностью).
-            Image.asset(
-              'assets/images/logo.png',
-              height: 52,
-              filterQuality: FilterQuality.high,
-              semanticLabel: 'SoldierMart',
+            // Логотип нарисован под тёмный фон, поэтому стоит на индиго-плашке.
+            Container(
+              padding: const EdgeInsets.all(6),
+              decoration: BoxDecoration(
+                color: Brand.indigo,
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: Image.asset(
+                'assets/images/logo.png',
+                height: 44,
+                filterQuality: FilterQuality.high,
+                semanticLabel: 'SoldierMart',
+              ),
             ),
             const SizedBox(width: 14),
             Expanded(
@@ -278,13 +286,13 @@ class _ProductCard extends StatelessWidget {
                       iconSize: 26,
                       tooltip: isFav ? s.t('removeFav') : s.t('addFav'),
                       onPressed: () => app.toggleFavorite(product),
-                      // Тёмная подложка, чтобы сердечко читалось на плитке.
+                      // Белая подложка, чтобы сердечко читалось на плитке.
                       style: IconButton.styleFrom(
-                        backgroundColor: Brand.night.withAlpha(150),
+                        backgroundColor: Brand.white.withAlpha(230),
                       ),
                       icon: Icon(
                         isFav ? Icons.favorite : Icons.favorite_border,
-                        color: isFav ? Brand.heart : cs.tertiary,
+                        color: isFav ? Brand.heart : cs.onSurfaceVariant,
                       ),
                     ),
                   ),

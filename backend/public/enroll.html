@@ -5,20 +5,20 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>SoldierMart: регистрация лица</title>
 <style>
-  :root { color-scheme: dark; }
-  body { font-family: system-ui, sans-serif; background: #021024; color: #C1E8FF; margin: 0; padding: 20px; }
+  :root { color-scheme: light; }
+  body { font-family: system-ui, sans-serif; background: #FFFFFF; color: #0D0D1A; margin: 0; padding: 20px; }
   main { max-width: 520px; margin: 0 auto; }
   h1 { font-size: 22px; }
-  label { display: block; margin: 14px 0 4px; font-size: 14px; color: #7DA0CA; }
+  label { display: block; margin: 14px 0 4px; font-size: 14px; color: #5E6180; }
   input { width: 100%; box-sizing: border-box; padding: 12px; font-size: 18px; border-radius: 10px;
-          border: 1px solid #5483B3; background: #052659; color: #C1E8FF; }
-  video { width: 100%; border-radius: 14px; background: #052659; margin-top: 14px; transform: scaleX(-1); }
-  button { width: 100%; margin-top: 12px; padding: 14px; font-size: 18px; border: 0; border-radius: 10px;
-           background: #5483B3; color: #021024; font-weight: 600; cursor: pointer; }
+          border: 1px solid #C9CCF2; background: #F3F4FB; color: #0D0D1A; }
+  video { width: 100%; border-radius: 14px; background: #F3F4FB; margin-top: 14px; transform: scaleX(-1); }
+  button { width: 100%; margin-top: 12px; padding: 14px; font-size: 18px; border: 0; border-radius: 999px;
+           background: #3A3DE8; color: #FFFFFF; font-weight: 700; cursor: pointer; }
   button:disabled { opacity: .5; cursor: default; }
   #msg { margin-top: 14px; min-height: 48px; font-size: 16px; }
-  .ok { color: #8fe3a0; } .err { color: #ff9b9b; }
-  small { color: #7DA0CA; display: block; margin-top: 10px; line-height: 1.4; }
+  .ok { color: #1F9D55; } .err { color: #D92D4A; }
+  small { color: #5E6180; display: block; margin-top: 10px; line-height: 1.4; }
 </style>
 </head>
 <body>
@@ -30,7 +30,7 @@
   <input id="iin" inputmode="numeric" maxlength="12" autocomplete="off">
   <video id="v" autoplay playsinline muted></video>
   <button id="shot" disabled>Сделать снимок и сохранить</button>
-  <button id="wipe" style="background:#052659;color:#C1E8FF;border:1px solid #5483B3">Удалить эталон этого ИИН</button>
+  <button id="wipe" style="background:#F3F4FB;color:#0D0D1A;border:1px solid #C9CCF2">Удалить эталон этого ИИН</button>
   <div id="msg"></div>
   <small>
     Лицо должно быть крупно в кадре, один человек, ровный свет, без очков и головного убора.
